@@ -70,6 +70,40 @@ func PrintSuccess(url string) {
 	fmt.Println()
 }
 
+// PrintSuccessNoGateway 打印安装完成界面（Gateway 待配置状态）
+func PrintSuccessNoGateway(configPath string, gatewayPort int) {
+	content := StyleWarn.Render("安装完成") + StyleDim.Render("（Gateway 待启动）") + "\n\n" +
+		"  " + StyleSuccess.Render("✓") + "  OpenClaw CLI 已安装\n" +
+		"  " + StyleSuccess.Render("✓") + "  基础配置已写入\n" +
+		"  " + StyleSuccess.Render("✓") + "  桌面快捷方式已创建\n" +
+		"  " + StyleError.Render("✗") + "  " + StyleWarn.Render("AI 服务未配置 → Gateway 未启动") + "\n\n" +
+		"  双击「OpenClaw Manager」可随时继续配置。"
+
+	fmt.Println()
+	fmt.Println(StyleBox.Render(content))
+	fmt.Println()
+
+	fmt.Println("  " + StyleBold.Render("后续配置方法（任选一种）："))
+	fmt.Println()
+	fmt.Printf("  %s  双击桌面 「OpenClaw Manager」\n", StyleAccent.Render("方式一"))
+	fmt.Printf("       → 在主菜单选择「配置 API Key」\n")
+	fmt.Printf("       → 配置完成后选择「启动 Gateway」\n")
+	fmt.Println()
+	fmt.Printf("  %s  PowerShell 命令行：\n", StyleAccent.Render("方式二"))
+	fmt.Println()
+	fmt.Printf("    %s\n", StyleDim.Render("# 1. 配置 API Key（以 Anthropic 为例）"))
+	fmt.Printf("    $env:OPENCLAW_CONFIG_PATH=\"%s\"\n", configPath)
+	fmt.Printf("    openclaw models auth paste-token --provider anthropic\n")
+	fmt.Println()
+	fmt.Printf("    %s\n", StyleDim.Render("# 2. 启动 Gateway"))
+	fmt.Printf("    openclaw gateway --port %d --auth none\n", gatewayPort)
+	fmt.Println()
+
+	fmt.Print("  按 Enter 进入管理器...")
+	fmt.Scanln()
+	fmt.Println()
+}
+
 // WithSpinner 在 fn 执行期间显示旋转动画
 func WithSpinner(msg string, fn func() error) error {
 	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -89,6 +123,33 @@ func WithSpinner(msg string, fn func() error) error {
 			return err
 		case <-ticker.C:
 			frame := StyleAccent.Render(frames[i%len(frames)])
+			fmt.Printf("\r  %s  %s", frame, msg)
+			i++
+		}
+	}
+}
+
+// WithTimedSpinner 在 fn 执行期间显示旋转动画 + 已用时间（每秒更新一次）。
+// msgFn(elapsed) 返回要显示的文字，可按需将秒数嵌入提示。
+func WithTimedSpinner(msgFn func(elapsed time.Duration) string, fn func() error) error {
+	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	done := make(chan error, 1)
+	start := time.Now()
+
+	go func() { done <- fn() }()
+
+	i := 0
+	ticker := time.NewTicker(80 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case err := <-done:
+			fmt.Printf("\r%s\r", strings.Repeat(" ", 80))
+			return err
+		case <-ticker.C:
+			frame := StyleAccent.Render(frames[i%len(frames)])
+			msg := msgFn(time.Since(start))
 			fmt.Printf("\r  %s  %s", frame, msg)
 			i++
 		}
@@ -125,6 +186,59 @@ func AskConfirm(prompt string) bool {
 	fmt.Scanln(&input)
 	input = strings.TrimSpace(strings.ToLower(input))
 	return input == "" || input == "y" || input == "yes"
+}
+
+// AskChoice 以纯文本数字菜单方式让用户从若干选项中选一个，返回 0-based 下标。
+// 不使用 TUI 组件，兼容所有 Windows 终端环境，避免方向键导致的重复渲染 bug。
+func AskChoice(title string, options []string) int {
+	fmt.Println()
+	fmt.Printf("  %s  %s\n", StyleWarn.Render("?"), StyleBold.Render(title))
+	fmt.Println()
+	for i, opt := range options {
+		fmt.Printf("  %s  %s\n",
+			StyleAccent.Render(fmt.Sprintf("[%d]", i+1)),
+			opt)
+	}
+	fmt.Println()
+	for {
+		fmt.Printf("  请输入数字 [1-%d]: ", len(options))
+		var input string
+		fmt.Scanln(&input)
+		input = strings.TrimSpace(input)
+		n := 0
+		fmt.Sscanf(input, "%d", &n)
+		if n >= 1 && n <= len(options) {
+			fmt.Println()
+			return n - 1
+		}
+		fmt.Printf("  无效输入，请输入 1 到 %d 之间的数字\n", len(options))
+	}
+}
+
+// PrintAutoFix 打印正在执行自动修复的操作说明
+func PrintAutoFix(action string) {
+	fmt.Printf("  %s  %s\n", StyleAccent.Render("⚙"), StyleBold.Render("自动修复: ")+action)
+}
+
+// PrintAutoFixOK 打印自动修复成功
+func PrintAutoFixOK(result string) {
+	fmt.Printf("  %s  %s\n", StyleSuccess.Render("✓"), "修复成功："+result)
+}
+
+// PrintAutoFixFailed 打印自动修复失败
+func PrintAutoFixFailed(reason string) {
+	fmt.Printf("  %s  %s\n", StyleWarn.Render("!"), StyleWarn.Render("自动修复未能解决："+reason))
+}
+
+// PrintGuidance 打印明确的用户引导信息（有序步骤列表）
+func PrintGuidance(title string, steps []string) {
+	fmt.Println()
+	fmt.Printf("  %s  %s\n", StyleWarn.Render("→"), StyleBold.Render(title))
+	fmt.Println()
+	for i, s := range steps {
+		fmt.Printf("     %s  %s\n", StyleAccent.Render(fmt.Sprintf("%d.", i+1)), s)
+	}
+	fmt.Println()
 }
 
 // AskInput 简单文本输入

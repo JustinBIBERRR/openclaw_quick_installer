@@ -234,6 +234,12 @@ func extractNodeZip(zipPath, destDir string) error {
 			continue
 		}
 
+		// 跳过 Node.js 自带的校验文件，运行时无需
+		baseName := strings.ToUpper(filepath.Base(rel))
+		if baseName == "SHASUMS256.TXT" || baseName == "SHASUMS256.TXT.ASC" || baseName == "SHASUMS256.TXT.SIG" {
+			continue
+		}
+
 		destPath := filepath.Join(destDir, filepath.FromSlash(rel))
 
 		if f.FileInfo().IsDir() {

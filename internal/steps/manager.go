@@ -12,7 +12,11 @@ import (
 // RunOpenClawUpdate 更新 OpenClaw CLI 到最新版本
 func RunOpenClawUpdate(m *state.Manifest) error {
 	shadowEnv := env.ShadowEnv(m)
-	args := []string{"/c", "npm", "install", "-g", npmPackage + "@latest", "--no-audit", "--no-fund"}
+	args := []string{
+		"/c", "npm", "install", "-g", npmPackage + "@latest",
+		"--prefix", m.NPMGlobalPrefix(),
+		"--no-audit", "--no-fund",
+	}
 	cmd := exec.Command("cmd", args...)
 	cmd.Env = shadowEnv
 	setHideWindow(cmd)

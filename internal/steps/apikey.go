@@ -33,48 +33,125 @@ var providers = map[string]*providerConfig{
 		keyPattern: regexp.MustCompile(`^sk-[A-Za-z0-9]`),
 		validateFn: validateOpenAI,
 	},
+	"deepseek": {
+		name:       "DeepSeek",
+		keyPattern: regexp.MustCompile(`^sk-`),
+		validateFn: nil, // 不强制校验，网络可能受限
+	},
 	"custom": {
 		name:       "其他 OpenAI 兼容服务",
 		keyPattern: regexp.MustCompile(`.+`),
-		validateFn: nil, // 自定义服务不校验连通性
+		validateFn: nil,
 	},
 }
 
-// RunAPIKey 引导用户选择服务商、输入并验证 API Key
+// modelChoice 表示模型选择列表中的一项
+type modelChoice struct {
+	id    string // openclaw 模型 ID（"custom" 表示手动输入）
+	label string // 展示给用户的名称
+}
+
+// providerModelChoices 每个服务商的推荐模型列表（精选常用模型）
+var providerModelChoices = map[string][]modelChoice{
+	"anthropic": {
+		{"anthropic/claude-opus-4-6", "Claude Opus 4.6   （最新旗舰，最强能力）"},
+		{"anthropic/claude-sonnet-4-20250514", "Claude Sonnet 4    （均衡首选，性价比高）"},
+		{"anthropic/claude-3-7-sonnet-20250219", "Claude 3.7 Sonnet  （增强推理，复杂任务）"},
+		{"anthropic/claude-3-5-haiku-20241022", "Claude 3.5 Haiku   （速度最快，成本最低）"},
+		{"custom", "手动输入模型 ID"},
+	},
+	"openai": {
+		{"openai/gpt-4o", "GPT-4o        （均衡旗舰）"},
+		{"openai/gpt-4.1", "GPT-4.1       （最新版本）"},
+		{"openai/gpt-4o-mini", "GPT-4o Mini   （速度快，成本低）"},
+		{"openai/gpt-4-turbo", "GPT-4 Turbo   （稳定版）"},
+		{"custom", "手动输入模型 ID"},
+	},
+	"deepseek": {
+		{"deepseek/deepseek-chat", "DeepSeek V3    （均衡旗舰，性价比极高）"},
+		{"deepseek/deepseek-reasoner", "DeepSeek R1    （深度推理，复杂任务）"},
+		{"custom", "手动输入模型 ID"},
+	},
+	"custom": {
+		{"custom", "手动输入模型 ID（例如：qwen/qwen-max）"},
+	},
+}
+
+// RunAPIKey 引导用户选择服务商、选择模型、输入并验证 API Key
 func RunAPIKey(m *state.Manifest) error {
 	if m.IsDone(state.StepAPIKeySaved) {
 		return nil
 	}
 
 	var providerID string
+	var modelID string
 	var apiKey string
 	var baseURL string // 仅 custom 服务商使用
 
-	// 第一步：选择服务商
-	providerForm := huh.NewForm(
-		huh.NewGroup(
-			huh.NewSelect[string]().
-				Title("请选择 AI 服务商").
-				Description("选择后将使用对应的 API Key 格式验证").
-				Options(
-					huh.NewOption("Anthropic (Claude)", "anthropic"),
-					huh.NewOption("OpenAI (GPT)", "openai"),
-					huh.NewOption("其他 OpenAI 兼容服务", "custom"),
-				).
-				Value(&providerID),
-		),
-	)
-	if err := providerForm.Run(); err != nil {
-		if errors.Is(err, huh.ErrUserAborted) {
-			return fmt.Errorf("用户取消操作")
+	// 第一步：选择服务商（含跳过选项）
+	providerIdx := ui.AskChoice("选择 AI 服务商", []string{
+		"Anthropic（Claude 系列）",
+		"OpenAI（GPT 系列）",
+		"DeepSeek（国内访问友好，性价比高）",
+		"其他 OpenAI 兼容服务",
+		"稍后手动配置（跳过此步骤）",
+	})
+	switch providerIdx {
+	case 0:
+		providerID = "anthropic"
+	case 1:
+		providerID = "openai"
+	case 2:
+		providerID = "deepseek"
+	case 3:
+		providerID = "custom"
+	default:
+		providerID = "skip"
+	}
+
+	// 用户选择跳过：记录标记后直接返回
+	if providerID == "skip" {
+		ui.PrintWarn("已跳过 API Key 配置，安装完成后在管理器中选择「配置 API Key」")
+		m.Steps["_api_key_tmp"] = &state.StepRecord{
+			Status: "tmp",
+			Meta:   map[string]string{"key": "", "provider": "skip", "base_url": "", "model": ""},
 		}
-		return err
+		return m.MarkDone(state.StepAPIKeySaved, map[string]string{"provider": "skip"})
 	}
 
 	cfg := providers[providerID]
 
-	// 第二步：如果是自定义服务，询问 Base URL
-	if providerID == "custom" {
+	// 第二步：选择模型
+	choices := providerModelChoices[providerID]
+	if len(choices) == 0 {
+		choices = []modelChoice{{"custom", "手动输入模型 ID"}}
+	}
+	labels := make([]string, len(choices))
+	for i, c := range choices {
+		labels[i] = c.label
+	}
+	modelIdx := ui.AskChoice("选择默认模型", labels)
+	selected := choices[modelIdx]
+
+	if selected.id == "custom" {
+		fmt.Printf("  %s  请输入模型 ID: ", ui.StyleInfo.Render("?"))
+		fmt.Scanln(&modelID)
+		modelID = strings.TrimSpace(modelID)
+		if modelID == "" {
+			modelID = choices[0].id // 回退到第一个推荐模型
+		}
+	} else {
+		modelID = selected.id
+	}
+	ui.PrintOK(fmt.Sprintf("已选模型: %s", modelID))
+
+	// 第三步：Base URL 处理
+	// DeepSeek 自动填入官方地址；完全自定义服务由用户输入
+	switch providerID {
+	case "deepseek":
+		baseURL = "https://api.deepseek.com/v1"
+		ui.PrintOK("Base URL 已自动配置: " + baseURL)
+	case "custom":
 		baseURLForm := huh.NewForm(
 			huh.NewGroup(
 				huh.NewInput().
@@ -89,7 +166,7 @@ func RunAPIKey(m *state.Manifest) error {
 		}
 	}
 
-	// 第三步：输入并验证 Key（最多重试 3 次）
+	// 第四步：输入并验证 Key（最多重试 3 次）
 	const maxRetries = 3
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		keyForm := huh.NewForm(
@@ -169,6 +246,9 @@ saveKey:
 	meta := map[string]string{
 		"provider": providerID,
 	}
+	if modelID != "" {
+		meta["model"] = modelID
+	}
 	if baseURL != "" {
 		meta["base_url"] = baseURL
 	}
@@ -180,18 +260,23 @@ saveKey:
 	// 临时存储到 meta，供 config 步骤使用
 	m.Steps["_api_key_tmp"] = &state.StepRecord{
 		Status: "tmp",
-		Meta:   map[string]string{"key": apiKey, "provider": providerID, "base_url": baseURL},
+		Meta: map[string]string{
+			"key":      apiKey,
+			"provider": providerID,
+			"base_url": baseURL,
+			"model":    modelID,
+		},
 	}
 
 	return m.MarkDone(state.StepAPIKeySaved, meta)
 }
 
 // GetSavedAPIKey 从临时存储读取 API Key（供 config 步骤使用）
-func GetSavedAPIKey(m *state.Manifest) (key, provider, baseURL string) {
+func GetSavedAPIKey(m *state.Manifest) (key, provider, baseURL, model string) {
 	if r, ok := m.Steps["_api_key_tmp"]; ok && r.Meta != nil {
-		return r.Meta["key"], r.Meta["provider"], r.Meta["base_url"]
+		return r.Meta["key"], r.Meta["provider"], r.Meta["base_url"], r.Meta["model"]
 	}
-	return "", "", ""
+	return "", "", "", ""
 }
 
 func getKeyHint(provider string) string {
@@ -200,6 +285,8 @@ func getKeyHint(provider string) string {
 		return "格式: sk-ant-api03-... (从 console.anthropic.com 获取)"
 	case "openai":
 		return "格式: sk-... (从 platform.openai.com 获取)"
+	case "deepseek":
+		return "格式: sk-... (从 platform.deepseek.com/api-keys 获取)"
 	default:
 		return "请输入您的 API Key"
 	}

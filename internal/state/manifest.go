@@ -18,11 +18,12 @@ const (
 	PhaseFailed      = "failed"
 	PhaseUninstalled = "uninstalled"
 
-	StepRuntimeDownloaded = "runtime_downloaded"
-	StepCLIInstalled      = "cli_installed"
-	StepAPIKeySaved       = "api_key_saved"
-	StepConfigWritten     = "config_written"
-	StepGatewayStarted    = "gateway_started"
+	StepRuntimeDownloaded  = "runtime_downloaded"
+	StepCLIInstalled       = "cli_installed"
+	StepAPIKeySaved        = "api_key_saved"
+	StepConfigWritten      = "config_written"
+	StepGatewayStarted     = "gateway_started"
+	StepFeishuConfigured   = "feishu_configured"
 
 	StatusDone    = "done"
 	StatusPending = "pending"
@@ -43,6 +44,8 @@ type Manifest struct {
 	InstallDir    string                 `json:"install_dir"`
 	NodeVersion   string                 `json:"node_version"`
 	GatewayPort   int                    `json:"gateway_port"`
+	UseSystemNode bool                   `json:"use_system_node,omitempty"`
+	UseSystemCLI  bool                   `json:"use_system_cli,omitempty"`
 	Steps         map[string]*StepRecord `json:"steps"`
 }
 
@@ -62,6 +65,7 @@ func NewManifest(appVersion string) *Manifest {
 			StepAPIKeySaved:       {Status: StatusPending},
 			StepConfigWritten:     {Status: StatusPending},
 			StepGatewayStarted:    {Status: StatusPending},
+			StepFeishuConfigured:  {Status: StatusPending},
 		},
 	}
 }
@@ -92,7 +96,7 @@ func LoadManifest() (*Manifest, error) {
 	if m.Steps == nil {
 		m.Steps = make(map[string]*StepRecord)
 	}
-	for _, key := range []string{StepRuntimeDownloaded, StepCLIInstalled, StepAPIKeySaved, StepConfigWritten, StepGatewayStarted} {
+	for _, key := range []string{StepRuntimeDownloaded, StepCLIInstalled, StepAPIKeySaved, StepConfigWritten, StepGatewayStarted, StepFeishuConfigured} {
 		if _, ok := m.Steps[key]; !ok {
 			m.Steps[key] = &StepRecord{Status: StatusPending}
 		}
@@ -149,9 +153,12 @@ func (m *Manifest) NodeDir() string {
 	return filepath.Join(m.InstallDir, "runtime", "node")
 }
 
-// NPMGlobalBin 返回 npm 全局 bin 目录
+// NPMGlobalBin 返回 npm 全局可执行文件目录。
+// Windows 上，npm global install 将 .cmd 脚本写入 prefix 根目录（非 bin/ 子目录），
+// 因此直接返回 prefix 根即可。Unix 系统的 bin/ 约定仅在交叉编译/CI 场景下有意义，
+// 但本工具的运行时目标仅为 Windows，保持一致即可。
 func (m *Manifest) NPMGlobalBin() string {
-	return filepath.Join(m.InstallDir, "npm-global", "bin")
+	return filepath.Join(m.InstallDir, "npm-global")
 }
 
 // NPMGlobalPrefix 返回 npm 全局前缀目录
@@ -162,6 +169,11 @@ func (m *Manifest) NPMGlobalPrefix() string {
 // ConfigFile 返回 openclaw.json 路径
 func (m *Manifest) ConfigFile() string {
 	return filepath.Join(m.InstallDir, "openclaw.json")
+}
+
+// FeishuConfigFile 返回飞书凭证文件路径
+func (m *Manifest) FeishuConfigFile() string {
+	return filepath.Join(m.InstallDir, "feishu.json")
 }
 
 // ManifestFilePath 返回清单文件的完整路径
