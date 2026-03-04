@@ -13,12 +13,12 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 // 为 Command 统一添加无窗口标志的帮助宏
+// 只做 &mut 调用，不 move、不产生额外值
 macro_rules! no_window {
-    ($cmd:expr) => {{
+    ($cmd:expr) => {
         #[cfg(target_os = "windows")]
-        $cmd.creation_flags(CREATE_NO_WINDOW);
-        $cmd
-    }};
+        { $cmd.creation_flags(CREATE_NO_WINDOW); }
+    };
 }
 
 // ─── 数据结构 ─────────────────────────────────────────────────────────────
