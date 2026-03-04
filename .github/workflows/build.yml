@@ -6,6 +6,9 @@ on:
       - "v*"           # 推送 v1.0.0 这类 tag 时触发
   workflow_dispatch:   # 也可以手动在 GitHub Actions 页面点触发
 
+permissions:
+  contents: write   # 允许 GITHUB_TOKEN 创建 Release 和上传附件
+
 jobs:
   build-windows:
     name: Build Windows Installer
