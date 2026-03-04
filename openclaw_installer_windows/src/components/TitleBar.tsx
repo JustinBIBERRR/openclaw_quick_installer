@@ -10,14 +10,6 @@ const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 export default function TitleBar({ title }: Props) {
   const [maximized, setMaximized] = useState(false);
 
-  // 获取窗口对象（同步引用，不依赖 state 延迟）
-  function getWin() {
-    if (!isTauri) return null;
-    // @tauri-apps/api/window 在 Tauri 环境下已内置，直接访问
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (window as any).__TAURI__?.window?.getCurrent?.() ?? null;
-  }
-
   useEffect(() => {
     if (!isTauri) return;
     // 监听窗口最大化状态变化
