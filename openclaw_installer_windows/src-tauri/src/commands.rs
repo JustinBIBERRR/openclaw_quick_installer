@@ -305,16 +305,28 @@ fn find_free_port(start: u16) -> u16 {
 }
 
 fn default_install_dir_inner() -> String {
-    // 优先使用 %LOCALAPPDATA%\OpenClaw（Windows 标准用户级应用数据目录）
-    // 例如 C:\Users\Alice\AppData\Local\OpenClaw
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+    let local_res = std::env::var("LOCALAPPDATA");
+    let profile_res = std::env::var("USERPROFILE");
+    // #region agent log
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+            r"d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
+        ) {
+            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+            let local_val = local_res.as_deref().unwrap_or("ERR");
+            let profile_val = profile_res.as_deref().unwrap_or("ERR");
+            let _ = writeln!(f, "{{\"location\":\"commands.rs:default_install_dir_inner\",\"message\":\"env vars\",\"data\":{{\"LOCALAPPDATA\":\"{}\",\"USERPROFILE\":\"{}\"}},\"timestamp\":{},\"hypothesisId\":\"D\"}}",
+                local_val, profile_val, ts);
+        }
+    }
+    // #endregion
+    if let Ok(local) = local_res {
         return format!("{}\\OpenClaw", local);
     }
-    // 次选 %USERPROFILE%\OpenClaw
-    if let Ok(profile) = std::env::var("USERPROFILE") {
+    if let Ok(profile) = profile_res {
         return format!("{}\\OpenClaw", profile);
     }
-    // 最后兜底
     "C:\\OpenClaw".to_string()
 }
 

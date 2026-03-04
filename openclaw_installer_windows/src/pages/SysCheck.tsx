@@ -17,35 +17,35 @@ const PREVIEW_DEFAULT_DIR = "C:\\Users\\YourName\\AppData\\Local\\OpenClaw";
 
 const CHECK_META: Record<string, { label: string; tip: string }> = {
   admin:    {
-    label: "管理员权限",
-    tip:   "安装器需要管理员权限以修改系统路径、绕过 Windows Defender 扫描等，确保安装顺利完成。",
+    label: "?????",
+    tip:   "???????????????????? Windows Defender ?????????????",
   },
   webview2: {
-    label: "Windows 系统浏览器内核",
-    tip:   "OpenClaw 界面依赖 Edge/WebView2 内核渲染。Windows 11 已内置，Windows 10 可能需要额外安装（约 100MB）。",
+    label: "Windows ???????",
+    tip:   "OpenClaw ???? Edge/WebView2 ?????Windows 11 ????Windows 10 ?????????? 100MB??",
   },
   disk:     {
-    label: "磁盘空间（需 2GB）",
-    tip:   "Node.js 运行时 + OpenClaw 程序文件约需 500MB，建议至少预留 2GB 以保证安装和运行。",
+    label: "?????? 2GB?",
+    tip:   "Node.js ??? + OpenClaw ?????? 500MB??????? 2GB ?????????",
   },
   port:     {
-    label: "端口 18789 可用",
-    tip:   "OpenClaw Gateway 默认监听此端口。若被占用，安装器会自动切换到下一个可用端口。",
+    label: "?? 18789 ??",
+    tip:   "OpenClaw Gateway ??????????????????????????????",
   },
   path:     {
-    label: "路径合法性",
-    tip:   "安装路径须为纯英文字母和数字，不含空格和中文，否则 Node.js 将无法正常工作。",
+    label: "?????",
+    tip:   "????????????????????????? Node.js ????????",
   },
   network:  {
-    label: "网络连通性",
-    tip:   "安装时需要访问 npmmirror.com 下载 OpenClaw，国内直连速度较快，无需翻墙。",
+    label: "?????",
+    tip:   "??????? npmmirror.com ?? OpenClaw???????????????",
   },
 };
 
 export default function SysCheck({ onDone }: Props) {
   const [checks, setChecks] = useState<SysCheckItem[]>(
     Object.entries(CHECK_META).map(([key, m]) => ({
-      key, label: m.label, status: "checking", detail: "检测中..."
+      key, label: m.label, status: "checking", detail: "???..."
     }))
   );
   const [installDir, setInstallDir] = useState("");
@@ -62,6 +62,9 @@ export default function SysCheck({ onDone }: Props) {
 
   useEffect(() => {
     async function init() {
+      // #region agent log
+      fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:init',message:'init called',data:{isTauri,hasTauriGlobal:'__TAURI__' in window,windowKeys:Object.keys(window).filter(k=>k.includes('TAURI'))},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
       if (!isTauri) {
         setInstallDir(PREVIEW_DEFAULT_DIR);
         setDefaultDir(PREVIEW_DEFAULT_DIR);
@@ -70,10 +73,16 @@ export default function SysCheck({ onDone }: Props) {
       }
       try {
         const dir = await invoke<string>("get_default_install_dir");
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:invoke-result',message:'invoke get_default_install_dir result',data:{dir},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         setInstallDir(dir);
         setDefaultDir(dir);
         runChecks(dir);
-      } catch {
+      } catch(err) {
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:invoke-catch',message:'invoke get_default_install_dir FAILED',data:{err:String(err)},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+        // #endregion
         setInstallDir(PREVIEW_DEFAULT_DIR);
         setDefaultDir(PREVIEW_DEFAULT_DIR);
         runChecks(PREVIEW_DEFAULT_DIR);
@@ -87,11 +96,11 @@ export default function SysCheck({ onDone }: Props) {
     setDone(false);
     setAdminFailed(false);
     setWebview2Missing(false);
-    setChecks((prev) => prev.map((c) => ({ ...c, status: "checking", detail: "检测中..." })));
+    setChecks((prev) => prev.map((c) => ({ ...c, status: "checking", detail: "???..." })));
 
     if (!isTauri) {
       setTimeout(() => {
-        setChecks((prev) => prev.map((c) => ({ ...c, status: "ok", detail: "检测通过（预览模式）" })));
+        setChecks((prev) => prev.map((c) => ({ ...c, status: "ok", detail: "??????????" })));
         setDone(true);
       }, 800);
       return;
@@ -106,23 +115,23 @@ export default function SysCheck({ onDone }: Props) {
 
       updateCheck("admin", {
         status: r.admin ? "ok" : "error",
-        detail: r.admin ? "已获取管理员权限" : "未以管理员身份运行",
+        detail: r.admin ? "????????" : "?????????",
       });
       updateCheck("webview2", {
         status: r.webview2 ? "ok" : "warn",
         detail: r.webview2
-          ? "已安装 (Edge/WebView2)"
-          : "未检测到，安装完成后界面可能无法显示",
+          ? "??? (Edge/WebView2)"
+          : "??????????????????",
       });
       updateCheck("disk", {
         status: r.disk_gb >= 2 ? "ok" : "warn",
-        detail: `可用空间: ${r.disk_gb.toFixed(1)} GB${r.disk_gb < 2 ? "，建议至少 2GB" : ""}`,
+        detail: `????: ${r.disk_gb.toFixed(1)} GB${r.disk_gb < 2 ? "????? 2GB" : ""}`,
       });
       updateCheck("port", {
         status: "ok",
         detail: r.port === 18789
-          ? "端口 18789 空闲"
-          : `18789 已被占用，将使用端口 ${r.port}`,
+          ? "?? 18789 ??"
+          : `18789 ?????????? ${r.port}`,
       });
 
       if (!r.path_valid && r.suggested_dir) {
@@ -130,14 +139,14 @@ export default function SysCheck({ onDone }: Props) {
       }
       updateCheck("path", {
         status: r.path_valid ? "ok" : "warn",
-        detail: r.path_valid ? `路径合法: ${dir}` : r.path_issue,
+        detail: r.path_valid ? `????: ${dir}` : r.path_issue,
       });
 
       updateCheck("network", {
         status: r.network_ok ? "ok" : "warn",
         detail: r.network_ok
-          ? "可访问 npmmirror.com，下载速度良好"
-          : "网络受限，安装可能较慢，请检查网络后继续",
+          ? "??? npmmirror.com???????"
+          : "????????????????????",
       });
 
       setAdminFailed(!r.admin);
@@ -145,7 +154,7 @@ export default function SysCheck({ onDone }: Props) {
       setDone(true);
     } catch {
       setChecks((prev) => prev.map((c) =>
-        c.status === "checking" ? { ...c, status: "warn", detail: "检测失败，可忽略继续安装" } : c
+        c.status === "checking" ? { ...c, status: "warn", detail: "????????????" } : c
       ));
       setDone(true);
     }
@@ -172,8 +181,8 @@ export default function SysCheck({ onDone }: Props) {
   return (
     <div className="h-full flex flex-col px-6 py-4 gap-3 overflow-y-auto">
       <div>
-        <h2 className="text-lg font-semibold text-gray-100">系统预检</h2>
-        <p className="text-sm text-gray-400 mt-0.5">正在检测安装环境，全部通过后即可开始安装</p>
+        <h2 className="text-lg font-semibold text-gray-100">????</h2>
+        <p className="text-sm text-gray-400 mt-0.5">????????????????????</p>
       </div>
 
       {adminFailed && (
@@ -181,18 +190,18 @@ export default function SysCheck({ onDone }: Props) {
           <div className="flex items-start gap-3">
             <ShieldCheck size={18} className="text-red-400 mt-0.5 flex-shrink-0" />
             <div>
-              <p className="text-sm font-medium text-red-300">需要管理员权限才能继续</p>
+              <p className="text-sm font-medium text-red-300">???????????</p>
               <p className="text-xs text-red-400/80 mt-1">
-                安装需要写入系统目录、修改注册表路径、以及添加 Windows Defender 排除规则。
+                ??????????????????????? Windows Defender ?????
               </p>
             </div>
           </div>
           <div className="bg-gray-900/60 rounded-md p-3 text-xs text-gray-300 space-y-1.5">
-            <p className="font-medium text-gray-200 mb-2">手动以管理员身份运行：</p>
-            <p>① 关闭当前窗口</p>
-            <p>② 找到安装器 exe，<span className="text-yellow-300 font-medium">右键单击</span></p>
-            <p>③ 选择<span className="text-yellow-300 font-medium">「以管理员身份运行」</span></p>
-            <p>④ 通过 UAC 弹窗即可继续安装</p>
+            <p className="font-medium text-gray-200 mb-2">???????????</p>
+            <p>? ??????</p>
+            <p>? ????? exe?<span className="text-yellow-300 font-medium">????</span></p>
+            <p>? ??<span className="text-yellow-300 font-medium">??????????</span></p>
+            <p>? ?? UAC ????????</p>
           </div>
           <button
             onClick={handleRelaunchAsAdmin}
@@ -202,8 +211,8 @@ export default function SysCheck({ onDone }: Props) {
               text-white text-sm font-medium rounded-lg transition-colors"
           >
             {relaunching
-              ? <><Loader size={13} className="animate-spin" /> 正在提权...</>
-              : <><ShieldCheck size={13} /> 自动重启并以管理员身份运行</>
+              ? <><Loader size={13} className="animate-spin" /> ????...</>
+              : <><ShieldCheck size={13} /> ?????????????</>
             }
           </button>
         </div>
@@ -213,16 +222,16 @@ export default function SysCheck({ onDone }: Props) {
         <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-lg p-3 flex items-start gap-3">
           <AlertCircle size={15} className="text-yellow-400 mt-0.5 flex-shrink-0" />
           <div className="text-xs text-yellow-300/90">
-            <p className="font-medium mb-1">需要安装 Windows 系统浏览器内核 (WebView2)</p>
+            <p className="font-medium mb-1">???? Windows ??????? (WebView2)</p>
             <p className="text-yellow-400/70 mb-2">
-              OpenClaw 界面依赖此内核渲染，Windows 11 已内置，Windows 10 需额外安装（约 100MB），安装完成后重启安装器即可。
+              OpenClaw ??????????Windows 11 ????Windows 10 ??????? 100MB???????????????
             </p>
             <button
               onClick={() => invoke("open_url", { url: "https://go.microsoft.com/fwlink/p/?LinkId=2124703" })}
               className="flex items-center gap-1.5 text-yellow-300 hover:text-yellow-200 underline underline-offset-2"
             >
               <ExternalLink size={11} />
-              点击下载 WebView2 运行时（微软官方）
+              ???? WebView2 ?????????
             </button>
           </div>
         </div>
@@ -234,13 +243,13 @@ export default function SysCheck({ onDone }: Props) {
             <FolderOpen size={15} className="text-gray-500 flex-shrink-0 mt-0.5" />
             <div className="flex-1 min-w-0">
               <div className="text-sm text-gray-300 mb-0.5">
-                Node.js 运行时和 OpenClaw 程序将安装到：
+                Node.js ???? OpenClaw ???????
               </div>
               <div className="font-mono text-brand-400 text-sm break-all">{installDir}</div>
               <div className="text-[11px] text-gray-600 mt-1.5 space-y-0.5">
-                <p>✓ 安装时自动创建，当前目录不存在是正常的</p>
-                <p>✓ 与安装器 exe 本身的位置无关</p>
-                <p>✓ OpenClaw 的个人配置会另外保存在 <span className="text-gray-500 font-mono">%USERPROFILE%\.openclaw</span> 中</p>
+                <p>? ???????????????????</p>
+                <p>? ???? exe ???????</p>
+                <p>? OpenClaw ??????????? <span className="text-gray-500 font-mono">%USERPROFILE%\.openclaw</span> ?</p>
               </div>
             </div>
             <button
@@ -249,14 +258,14 @@ export default function SysCheck({ onDone }: Props) {
                 whitespace-nowrap transition-colors flex-shrink-0 mt-0.5"
             >
               {showAdvanced ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              修改
+              ??
             </button>
           </div>
 
           {showAdvanced && (
             <div className="border-t border-gray-800 px-4 py-3 bg-gray-800/40">
               <p className="text-[11px] text-yellow-500/80 mb-2">
-                ⚠ 路径须为纯英文字母和数字，不含空格、中文或特殊字符，否则 Node.js 将无法正常工作
+                ? ???????????????????????????? Node.js ???????
               </p>
               <div className="flex gap-2">
                 <input
@@ -274,7 +283,7 @@ export default function SysCheck({ onDone }: Props) {
                     className="px-3 text-xs bg-gray-700 hover:bg-gray-600 rounded border border-gray-600
                       text-gray-400 transition-colors whitespace-nowrap"
                   >
-                    恢复默认
+                    ????
                   </button>
                 )}
                 <button
@@ -282,7 +291,7 @@ export default function SysCheck({ onDone }: Props) {
                   className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded border border-gray-600
                     text-gray-300 transition-colors whitespace-nowrap"
                 >
-                  验证路径
+                  ????
                 </button>
               </div>
             </div>
@@ -315,11 +324,11 @@ export default function SysCheck({ onDone }: Props) {
       {done && (
         <div className="flex items-center justify-between flex-shrink-0">
           {adminFailed ? (
-            <p className="text-xs text-red-400">请先以管理员身份重新运行安装器</p>
+            <p className="text-xs text-red-400">???????????????</p>
           ) : checks.some((c) => c.status === "warn") ? (
-            <p className="text-xs text-yellow-500">存在警告项，建议处理后再继续</p>
+            <p className="text-xs text-yellow-500">??????????????</p>
           ) : (
-            <p className="text-xs text-gray-500">所有检测通过 ✓</p>
+            <p className="text-xs text-gray-500">?????? ?</p>
           )}
           <button
             disabled={!canProceed}
@@ -328,7 +337,7 @@ export default function SysCheck({ onDone }: Props) {
               disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed
               text-gray-950 font-semibold text-sm rounded-lg transition-colors"
           >
-            开始安装 →
+            ???? ?
           </button>
         </div>
       )}
