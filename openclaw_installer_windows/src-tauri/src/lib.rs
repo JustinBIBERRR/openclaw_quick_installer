@@ -15,6 +15,7 @@ pub fn run() {
             commands::stop_gateway,
             commands::get_gateway_status,
             commands::open_url,
+            commands::relaunch_as_admin,
             commands::uninstall,
         ])
         .run(tauri::generate_context!())

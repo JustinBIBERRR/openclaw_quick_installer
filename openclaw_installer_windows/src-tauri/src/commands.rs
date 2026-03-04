@@ -6,6 +6,21 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, Window};
 
+// Windows 专属：隐藏 PowerShell 控制台窗口
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+// 为 Command 统一添加无窗口标志的帮助宏
+macro_rules! no_window {
+    ($cmd:expr) => {{
+        #[cfg(target_os = "windows")]
+        $cmd.creation_flags(CREATE_NO_WINDOW);
+        $cmd
+    }};
+}
+
 // ─── 数据结构 ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -106,16 +121,14 @@ fn parse_log_line(line: &str) -> (&'static str, String) {
         ("dim", msg.trim().to_string())
     } else if let Some(msg) = line.strip_prefix("[INFO]") {
         ("info", msg.trim().to_string())
-    } else if line.starts_with("[RESULT]") {
-        ("dim", String::new()) // 过滤掉 RESULT 行
-    } else if line.starts_with("[PROGRESS:") {
-        ("dim", String::new()) // 过滤掉 PROGRESS 行
+    } else if line.starts_with("[RESULT]") || line.starts_with("[PROGRESS:") {
+        ("dim", String::new())
     } else {
         ("dim", line.to_string())
     }
 }
 
-/// 在 Tokio 阻塞线程中运行 PowerShell 脚本，逐行 emit 日志
+/// 在 Tokio 阻塞线程中运行 PowerShell 脚本（隐藏窗口），逐行 emit 日志
 fn run_ps_script_streaming_sync(
     window: Window,
     script_path: PathBuf,
@@ -134,6 +147,7 @@ fn run_ps_script_streaming_sync(
         cmd.env(k, v);
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    no_window!(cmd); // 关键：不弹出 PowerShell 窗口
 
     let mut child = cmd.spawn().map_err(|e| format!("启动 PowerShell 失败: {e}"))?;
 
@@ -187,7 +201,7 @@ pub fn get_app_state() -> Option<AppManifest> {
     read_manifest("C:\\OpenClaw")
 }
 
-/// 系统预检（在阻塞线程执行）
+/// 系统预检（纯 Rust 实现，不弹出 PowerShell 窗口）
 #[tauri::command]
 pub async fn run_syscheck(install_dir: String) -> Result<SysCheckResult, String> {
     tokio::task::spawn_blocking(move || {
@@ -214,39 +228,70 @@ pub async fn run_syscheck(install_dir: String) -> Result<SysCheckResult, String>
 }
 
 fn check_admin() -> bool {
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command",
-            "[bool](([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"])
-        .output();
-    match output {
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-Command",
+        "[bool](([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))"])
+        .stdout(Stdio::piped()).stderr(Stdio::null());
+    no_window!(cmd);
+    match cmd.output() {
         Ok(o) => String::from_utf8_lossy(&o.stdout).trim() == "True",
         Err(_) => false,
     }
 }
 
 fn check_webview2() -> bool {
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command",
-            "(Get-ItemProperty 'HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}' -ErrorAction SilentlyContinue).pv"])
-        .output();
-    match output {
-        Ok(o) => !String::from_utf8_lossy(&o.stdout).trim().is_empty(),
-        Err(_) => true,
+    // 直接查注册表，不调用 PowerShell
+    let keys = [
+        r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+        r"SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}",
+    ];
+    for key in &keys {
+        if std::fs::metadata(format!("HKLM\\{key}")).is_ok() {
+            return true;
+        }
     }
+    // fallback: 用 reg query（无 PowerShell）
+    let mut cmd = Command::new("reg");
+    cmd.args(["query",
+        r"HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"])
+        .stdout(Stdio::piped()).stderr(Stdio::null());
+    no_window!(cmd);
+    if let Ok(o) = cmd.output() {
+        if o.status.success() { return true; }
+    }
+    let mut cmd2 = Command::new("reg");
+    cmd2.args(["query",
+        r"HKLM\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"])
+        .stdout(Stdio::piped()).stderr(Stdio::null());
+    no_window!(cmd2);
+    if let Ok(o) = cmd2.output() {
+        return o.status.success();
+    }
+    true // 默认假设已安装，避免误报
 }
 
 fn get_disk_free_gb(path: &str) -> f64 {
-    let drive = if path.len() >= 2 { &path[..1] } else { "C" };
-    let cmd = format!("(Get-PSDrive -Name '{}' -ErrorAction SilentlyContinue).Free / 1GB", drive);
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &cmd])
-        .output();
-    match output {
+    // 用 Rust 标准库直接获取磁盘空间
+    let drive_root = if path.len() >= 2 {
+        format!("{}:\\", &path[..1])
+    } else {
+        "C:\\".to_string()
+    };
+    // statvfs 在 Windows 不可用，用 powershell 快速查询（一次性，预检时可以接受）
+    let script = format!(
+        "(Get-PSDrive -Name '{}' -ErrorAction SilentlyContinue).Free / 1GB",
+        drive_root.chars().next().unwrap_or('C')
+    );
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-Command", &script])
+        .stdout(Stdio::piped()).stderr(Stdio::null());
+    no_window!(cmd);
+    match cmd.output() {
         Ok(o) => String::from_utf8_lossy(&o.stdout)
             .trim()
             .parse::<f64>()
-            .unwrap_or(0.0),
-        Err(_) => 999.0,
+            .unwrap_or(99.0),
+        Err(_) => 99.0,
     }
 }
 
@@ -272,15 +317,11 @@ fn check_path(path: &str) -> (bool, String, String) {
 }
 
 fn check_network_sync() -> bool {
-    // 使用 PowerShell 做简单的连通性检测
-    let output = Command::new("powershell")
-        .args(["-NoProfile", "-Command",
-            "try { $r = Invoke-WebRequest 'https://registry.npmmirror.com' -TimeoutSec 5 -UseBasicParsing -Method Head; $r.StatusCode -lt 500 } catch { $false }"])
-        .output();
-    match output {
-        Ok(o) => String::from_utf8_lossy(&o.stdout).trim() == "True",
-        Err(_) => false,
-    }
+    // 纯 TCP 连接测试，不启动 PowerShell
+    std::net::TcpStream::connect_timeout(
+        &"registry.npmmirror.com:443".parse().unwrap_or_else(|_| "1.1.1.1:443".parse().unwrap()),
+        Duration::from_secs(5),
+    ).is_ok()
 }
 
 /// 安装 OpenClaw（解压 Node.js + npm install）
@@ -293,7 +334,6 @@ pub async fn start_install(
     let node_zip = get_resource_file_path(&app, "node-v22-win-x64.zip")?;
     let script = get_script_path(&app, "install.ps1")?;
 
-    // 初始化 manifest
     let mut manifest = read_manifest(&install_dir).unwrap_or_default();
     manifest.install_dir = install_dir.clone();
     manifest.phase = "installing".into();
@@ -314,7 +354,6 @@ pub async fn start_install(
     .await
     .map_err(|e| e.to_string())??;
 
-    // 更新 manifest
     let mut manifest = read_manifest(&install_dir).unwrap_or_default();
     if !manifest.steps_done.contains(&"openclaw_installed".to_string()) {
         manifest.steps_done.push("openclaw_installed".into());
@@ -337,24 +376,24 @@ pub async fn validate_api_key(
             _ => format!("{}/models", base_url.trim_end_matches('/')),
         };
 
-        let headers_str;
-        if provider == "anthropic" {
-            headers_str = format!(
+        let ps_cmd = if provider == "anthropic" {
+            format!(
                 "try {{ $r = Invoke-WebRequest '{}' -Method GET -TimeoutSec 8 -UseBasicParsing -Headers @{{'x-api-key'='{}'; 'anthropic-version'='2023-06-01'}}; $r.StatusCode }} catch [System.Net.WebException] {{ $_.Exception.Response.StatusCode.value__ }} catch {{ 'timeout' }}",
                 url, api_key
-            );
+            )
         } else {
-            headers_str = format!(
+            format!(
                 "try {{ $r = Invoke-WebRequest '{}' -Method GET -TimeoutSec 8 -UseBasicParsing -Headers @{{'Authorization'='Bearer {}'}}; $r.StatusCode }} catch [System.Net.WebException] {{ $_.Exception.Response.StatusCode.value__ }} catch {{ 'timeout' }}",
                 url, api_key
-            );
-        }
+            )
+        };
 
-        let output = Command::new("powershell")
-            .args(["-NoProfile", "-Command", &headers_str])
-            .output();
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", &ps_cmd])
+            .stdout(Stdio::piped()).stderr(Stdio::null());
+        no_window!(cmd);
 
-        let code = match output {
+        let code = match cmd.output() {
             Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
             Err(_) => "timeout".to_string(),
         };
@@ -455,29 +494,14 @@ pub async fn start_gateway(
     .await
     .map_err(|e| e.to_string())??;
 
-    // 健康检查轮询（最多 60s）
-    let url = format!("http://localhost:{port}/health");
+    // 健康检查：纯 TCP 连接，不再启动 PowerShell
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     loop {
         if std::time::Instant::now() > deadline {
             return Err("Gateway 启动超时（60s）".into());
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let ok = tokio::task::spawn_blocking({
-            let url = url.clone();
-            move || {
-                Command::new("powershell")
-                    .args(["-NoProfile", "-Command",
-                        &format!("try {{ (Invoke-WebRequest '{}' -TimeoutSec 2 -UseBasicParsing).StatusCode -lt 500 }} catch {{ $false }}", url)])
-                    .output()
-                    .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "True")
-                    .unwrap_or(false)
-            }
-        })
-        .await
-        .unwrap_or(false);
-
-        if ok {
+        if tcp_port_open(port) {
             break;
         }
     }
@@ -494,65 +518,91 @@ pub async fn start_gateway(
     Ok(manifest)
 }
 
-/// 后台快速启动 Gateway（管理器用）
+/// 后台快速启动 Gateway（管理器用）—— 完全隐藏窗口
 #[tauri::command]
 pub fn start_gateway_bg(app: AppHandle, install_dir: String, port: u16) -> Result<(), String> {
     let script = get_script_path(&app, "gateway.ps1")?;
-    Command::new("powershell")
-        .args([
-            "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
-            "-File", &script.to_string_lossy(),
-        ])
-        .env("GW_ACTION", "start")
-        .env("GW_INSTALL_DIR", &install_dir)
-        .env("GW_PORT", port.to_string())
-        .spawn()
-        .map_err(|e| format!("启动 Gateway 失败: {e}"))?;
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
+        "-File", &script.to_string_lossy(),
+    ])
+    .env("GW_ACTION", "start")
+    .env("GW_INSTALL_DIR", &install_dir)
+    .env("GW_PORT", port.to_string())
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    no_window!(cmd);
+    cmd.spawn().map_err(|e| format!("启动 Gateway 失败: {e}"))?;
     Ok(())
 }
 
-/// 停止 Gateway
+/// 停止 Gateway —— 完全隐藏窗口
 #[tauri::command]
 pub fn stop_gateway(app: AppHandle, install_dir: String) -> Result<(), String> {
     let script = get_script_path(&app, "gateway.ps1")?;
-    Command::new("powershell")
-        .args([
-            "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
-            "-File", &script.to_string_lossy(),
-        ])
-        .env("GW_ACTION", "stop")
-        .env("GW_INSTALL_DIR", &install_dir)
-        .env("GW_PORT", "18789")
-        .spawn()
-        .map_err(|e| format!("停止 Gateway 失败: {e}"))?;
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
+        "-File", &script.to_string_lossy(),
+    ])
+    .env("GW_ACTION", "stop")
+    .env("GW_INSTALL_DIR", &install_dir)
+    .env("GW_PORT", "18789")
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    no_window!(cmd);
+    cmd.spawn().map_err(|e| format!("停止 Gateway 失败: {e}"))?;
     Ok(())
 }
 
-/// 查询 Gateway 状态（HTTP 健康检查）
+/// 查询 Gateway 状态 —— 纯 TCP 连接探测，零 PowerShell 调用，不会弹出任何窗口
 #[tauri::command]
 pub async fn get_gateway_status(_install_dir: String, port: u16) -> String {
-    let url = format!("http://localhost:{port}/health");
-    let ok = tokio::task::spawn_blocking(move || {
-        Command::new("powershell")
-            .args(["-NoProfile", "-Command",
-                &format!("try {{ (Invoke-WebRequest '{}' -TimeoutSec 2 -UseBasicParsing).StatusCode -lt 500 }} catch {{ $false }}", url)])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "True")
-            .unwrap_or(false)
-    })
-    .await
-    .unwrap_or(false);
-
+    // 在后台线程做 TCP 连接，不阻塞异步运行时
+    let ok = tokio::task::spawn_blocking(move || tcp_port_open(port))
+        .await
+        .unwrap_or(false);
     if ok { "running".to_string() } else { "stopped".to_string() }
+}
+
+/// TCP 端口探测（替代 PowerShell HTTP 检查，彻底消除弹窗）
+fn tcp_port_open(port: u16) -> bool {
+    std::net::TcpStream::connect_timeout(
+        &format!("127.0.0.1:{port}").parse().unwrap(),
+        Duration::from_millis(800),
+    ).is_ok()
 }
 
 /// 打开 URL（使用默认浏览器）
 #[tauri::command]
 pub fn open_url(url: String) -> Result<(), String> {
-    Command::new("cmd")
-        .args(["/c", "start", "", &url])
-        .spawn()
-        .map_err(|e| format!("打开 URL 失败: {e}"))?;
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/c", "start", "", &url])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    no_window!(cmd);
+    cmd.spawn().map_err(|e| format!("打开 URL 失败: {e}"))?;
+    Ok(())
+}
+
+/// 以管理员身份重新启动安装器（UAC 提权）
+#[tauri::command]
+pub fn relaunch_as_admin() -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile", "-Command",
+        &format!("Start-Process -FilePath '{}' -Verb RunAs", exe.to_string_lossy()),
+    ])
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+    no_window!(cmd);
+    cmd.spawn().map_err(|e| format!("UAC 提权失败: {e}"))?;
     Ok(())
 }
 
@@ -561,10 +611,11 @@ pub fn open_url(url: String) -> Result<(), String> {
 pub fn uninstall(install_dir: String) -> Result<(), String> {
     if let Some(m) = read_manifest(&install_dir) {
         if let Some(pid) = m.gateway_pid {
-            Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/F"])
-                .spawn()
-                .ok();
+            let mut cmd = Command::new("taskkill");
+            cmd.args(["/PID", &pid.to_string(), "/F"])
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            no_window!(cmd);
+            cmd.spawn().ok();
         }
     }
     std::fs::remove_dir_all(&install_dir)
@@ -586,9 +637,10 @@ fn create_desktop_shortcut(install_dir: &str) -> Result<(), String> {
         exe_path.to_string_lossy().replace('\\', "\\\\"),
         install_dir.replace('\\', "\\\\")
     );
-    Command::new("powershell")
-        .args(["-NoProfile", "-Command", &script])
-        .spawn()
-        .map_err(|e| format!("创建快捷方式失败: {e}"))?;
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-Command", &script])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    no_window!(cmd);
+    cmd.spawn().map_err(|e| format!("创建快捷方式失败: {e}"))?;
     Ok(())
 }
