@@ -105,18 +105,25 @@ jobs:
             ## OpenClaw 一键安装器 ${{ github.ref_name }}
 
             ### 下载说明
-            - **`OpenClaw-Installer-Setup.exe`** — 标准安装包（推荐，有安装向导）
-            - **`OpenClaw-Installer-Portable.exe`** — 便携版单文件（无需安装，直接运行）
+            | 文件 | 说明 |
+            |------|------|
+            | **`openclaw-installer.exe`** | 便携版单文件（推荐，双击即用） |
+            | `OpenClaw.Installer_*_x64-setup.exe` | 标准安装包（有安装向导） |
+            | `node-v22-win-x64.zip` | Node.js 运行时（安装器会自动下载，若网络不佳可手动下载后放至安装目录） |
 
             ### 使用方法
-            1. 下载 `Setup.exe` 并运行
+            1. 下载 `openclaw-installer.exe` 并双击运行
             2. 按向导完成 OpenClaw 安装
             3. 配置 AI API Key 后即可使用
+
+            ### 网络问题？
+            若安装器下载 Node.js 运行时失败，可手动下载本页面的 `node-v22-win-x64.zip`，
+            放到安装目录（默认 `C:\Users\你的用户名\AppData\Local\OpenClaw\`）后重新运行安装器。
 
             ### 系统要求
             - Windows 10 / 11 (64位)
             - 磁盘空间 ≥ 2GB
-            - 网络连接（安装时需要）
+            - 网络连接（安装时需要，或手动下载 Node.js 运行时）
 
             > 如 Windows Defender 弹出警告，点击"更多信息"→"仍要运行"即可
           draft: false
@@ -124,5 +131,6 @@ jobs:
           files: |
             openclaw_installer_windows/src-tauri/target/release/bundle/nsis/*.exe
             openclaw_installer_windows/src-tauri/target/release/OpenClaw*.exe
+            openclaw_installer_windows/src-tauri/resources/node-v22-win-x64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -53,18 +53,21 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
         Log-Info "Node.js 运行时未内置，正在从镜像下载（约 25MB）..."
         $NodeZipPath = "$InstallDir\node-v22-win-x64.zip"
 
+        # 多源降级：npmmirror CDN → npmmirror 镜像 → GitHub Release 自有 CDN → nodejs.org
         $urls = @(
             "https://cdn.npmmirror.com/binaries/node/v22.11.0/node-v22.11.0-win-x64.zip",
             "https://npmmirror.com/mirrors/node/v22.11.0/node-v22.11.0-win-x64.zip",
+            "https://github.com/JustinBIBERRR/openclaw_quick_installer/releases/latest/download/node-v22-win-x64.zip",
             "https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip"
         )
+        $ManualUrl = "https://github.com/JustinBIBERRR/openclaw_quick_installer/releases/latest"
 
         $downloaded = $false
         foreach ($url in $urls) {
             if ($downloaded) { break }
             Log-Info "尝试下载: $url"
 
-            # 方法 1: curl.exe（Windows 10 自带，TLS 更可靠）
+            # 方法 1: curl.exe（Windows 10 自带，SChannel TLS 栈，最可靠）
             try {
                 $curlExe = Join-Path $env:SystemRoot "System32\curl.exe"
                 if (Test-Path $curlExe) {
@@ -74,7 +77,7 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
                         # #region agent log
                         Dbg "install.ps1:download-curl-ok" "curl download OK" @{url=$url;size=(Get-Item $NodeZipPath).Length}
                         # #endregion
-                        Log-OK "Node.js 下载完成（curl）: $NodeZipPath"
+                        Log-OK "Node.js 下载完成（curl）"
                         $downloaded = $true
                         continue
                     } else {
@@ -90,7 +93,7 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
                 # #endregion
             }
 
-            # 方法 2: .NET WebClient（fallback）
+            # 方法 2: .NET WebClient（fallback，某些系统 TLS 可能失败）
             try {
                 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
                 $wc = New-Object System.Net.WebClient
@@ -99,7 +102,7 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
                     # #region agent log
                     Dbg "install.ps1:download-wc-ok" "WebClient download OK" @{url=$url;size=(Get-Item $NodeZipPath).Length}
                     # #endregion
-                    Log-OK "Node.js 下载完成（WebClient）: $NodeZipPath"
+                    Log-OK "Node.js 下载完成（WebClient）"
                     $downloaded = $true
                     continue
                 }
@@ -107,7 +110,22 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
                 # #region agent log
                 Dbg "install.ps1:download-wc-fail" "WebClient failed" @{url=$url;error=$_.ToString()}
                 # #endregion
-                Log-Warn "下载失败: $url - $_"
+                Log-Warn "源不可用: $url"
+            }
+        }
+
+        # 最终检查：是否有用户预先手动放好的 zip
+        if (-not $downloaded -and -not (Test-Path $NodeZipPath)) {
+            $altPath = "$InstallDir\node-v22-win-x64.zip"
+            $altPath2 = Join-Path ([Environment]::GetFolderPath('UserProfile')) "Downloads\node-v22-win-x64.zip"
+            if ((Test-Path $altPath) -and (Get-Item $altPath).Length -gt 1000000) {
+                $NodeZipPath = $altPath
+                $downloaded = $true
+                Log-OK "发现手动放置的 Node.js: $altPath"
+            } elseif ((Test-Path $altPath2) -and (Get-Item $altPath2).Length -gt 1000000) {
+                $NodeZipPath = $altPath2
+                $downloaded = $true
+                Log-OK "发现下载目录中的 Node.js: $altPath2"
             }
         }
 
@@ -115,8 +133,13 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
             # #region agent log
             Dbg "install.ps1:download-all-fail" "ALL downloads FAILED" @{}
             # #endregion
-            Log-Error "Node.js 下载失败。请手动下载并放至: $NodeZipPath"
-            Log-Error "下载地址: $($urls[0])"
+            Log-Error "所有自动下载源均失败。"
+            Log-Error "请手动下载 Node.js 运行时并放到安装目录后重试："
+            Log-Error "  1. 用浏览器打开: $ManualUrl"
+            Log-Error "  2. 下载 node-v22-win-x64.zip"
+            Log-Error "  3. 放到: $InstallDir\"
+            Log-Error "  4. 重新运行安装器"
+            Write-Output "[MANUAL_DOWNLOAD]$ManualUrl"
             exit 1
         }
     } else {

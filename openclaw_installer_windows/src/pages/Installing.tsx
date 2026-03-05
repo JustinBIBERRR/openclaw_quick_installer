@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Loader, RefreshCw } from "lucide-react";
+import { Loader, RefreshCw, ExternalLink, FolderSearch } from "lucide-react";
 import LogScroller from "../components/LogScroller";
 import type { AppManifest, LogEntry } from "../types";
 
@@ -14,7 +14,7 @@ interface Props {
   onDone: () => void;
 }
 
-type InstallPhase = "idle" | "running" | "done" | "failed";
+type InstallPhase = "idle" | "running" | "done" | "failed" | "manual_download";
 
 const INSTALL_STEPS = [
   "解压 Node.js v22",
@@ -27,6 +27,7 @@ export default function Installing({ manifest, logs, addLog, onDone }: Props) {
   const [phase, setPhase] = useState<InstallPhase>("idle");
   const [currentStep, setCurrentStep] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
+  const [manualDownloadUrl, setManualDownloadUrl] = useState("");
   const startedRef = useRef(false);
 
   useEffect(() => {
@@ -38,8 +39,21 @@ export default function Installing({ manifest, logs, addLog, onDone }: Props) {
       (e) => setCurrentStep(e.payload.step)
     );
 
+    const unlistenLog = listen<{ level: string; message: string }>(
+      "install-log",
+      (e) => {
+        if (e.payload.level === "manual_download" && e.payload.message) {
+          setManualDownloadUrl(e.payload.message);
+          setPhase("manual_download");
+        }
+      }
+    );
+
     startInstall();
-    return () => { unlistenProgress.then((f) => f()); };
+    return () => {
+      unlistenProgress.then((f) => f());
+      unlistenLog.then((f) => f());
+    };
   }, []);
 
   async function startInstall() {
@@ -127,13 +141,49 @@ export default function Installing({ manifest, logs, addLog, onDone }: Props) {
         <LogScroller logs={logs} maxHeight="h-full min-h-[150px]" />
       </div>
 
+      {/* 手动下载引导 */}
+      {phase === "manual_download" && (
+        <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-lg p-4 flex flex-col gap-3 flex-shrink-0">
+          <div className="flex items-start gap-2">
+            <FolderSearch size={16} className="text-yellow-400 mt-0.5 flex-shrink-0" />
+            <div>
+              <p className="text-sm font-medium text-yellow-300">Node.js 运行时下载失败，请手动下载</p>
+              <p className="text-xs text-yellow-400/70 mt-1">
+                您的网络环境无法自动下载 Node.js 运行时。请用浏览器手动下载后放到安装目录，然后点击"重试"。
+              </p>
+            </div>
+          </div>
+          <div className="bg-gray-900/60 rounded-md p-3 text-xs text-gray-300 space-y-1.5">
+            <p>1. 点击下方按钮，在 GitHub Release 页面下载 <code className="text-yellow-300">node-v22-win-x64.zip</code></p>
+            <p>2. 将下载的 zip 文件放到安装目录：<code className="text-brand-400 break-all">{manifest?.install_dir || "C:\\OpenClaw"}</code></p>
+            <p>3. 点击下方"重试"按钮继续安装</p>
+          </div>
+          <button
+            onClick={() => {
+              if (isTauri && manualDownloadUrl) {
+                invoke("open_url", { url: manualDownloadUrl }).catch(() => {
+                  window.open(manualDownloadUrl, "_blank");
+                });
+              }
+            }}
+            className="flex items-center justify-center gap-2 py-2 bg-yellow-600 hover:bg-yellow-500
+              text-white text-sm font-medium rounded-lg transition-colors"
+          >
+            <ExternalLink size={13} />
+            打开 GitHub 下载页面
+          </button>
+        </div>
+      )}
+
       {/* 底部 */}
       <div className="flex items-center justify-between flex-shrink-0">
-        {phase === "failed" ? (
+        {(phase === "failed" || phase === "manual_download") ? (
           <>
-            <p className="text-sm text-red-400 flex-1 mr-4 truncate">{errorMsg}</p>
+            <p className="text-sm text-red-400 flex-1 mr-4 truncate">
+              {phase === "manual_download" ? "请手动下载 Node.js 后重试" : errorMsg}
+            </p>
             <button
-              onClick={startInstall}
+              onClick={() => { setPhase("idle"); startedRef.current = false; startInstall(); }}
               className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm rounded-lg transition-colors"
             >
               <RefreshCw size={14} />

@@ -146,6 +146,8 @@ fn parse_log_line(line: &str) -> (&'static str, String) {
         ("dim", msg.trim().to_string())
     } else if let Some(msg) = line.strip_prefix("[INFO]") {
         ("info", msg.trim().to_string())
+    } else if let Some(url) = line.strip_prefix("[MANUAL_DOWNLOAD]") {
+        ("manual_download", url.trim().to_string())
     } else if line.starts_with("[RESULT]") || line.starts_with("[PROGRESS:") {
         ("dim", String::new())
     } else {
