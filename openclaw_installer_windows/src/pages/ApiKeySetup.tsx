@@ -2,7 +2,7 @@ import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Eye, EyeOff, Loader, CheckCircle, AlertCircle } from "lucide-react";
 
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 import type { AppManifest, ApiProvider, ApiProviderConfig } from "../types";
 
 interface Props {

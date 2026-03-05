@@ -5,7 +5,7 @@ interface Props {
   title: string;
 }
 
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export default function TitleBar({ title }: Props) {
   const [maximized, setMaximized] = useState(false);

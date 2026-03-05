@@ -366,6 +366,22 @@ pub async fn start_install(
 ) -> Result<(), String> {
     let node_zip = get_resource_file_path(&app, "node-v22-win-x64.zip")?;
     let script = get_script_path(&app, "install.ps1")?;
+    // #region agent log
+    {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+            r"d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
+        ) {
+            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+            let zip_exists = node_zip.exists();
+            let _ = writeln!(f, "{{\"location\":\"commands.rs:start_install\",\"message\":\"paths\",\"data\":{{\"node_zip\":\"{}\",\"zip_exists\":{},\"script\":\"{}\"}},\"timestamp\":{},\"runId\":\"install-debug\",\"hypothesisId\":\"E\"}}",
+                node_zip.display().to_string().replace('\\', "\\\\"),
+                zip_exists,
+                script.display().to_string().replace('\\', "\\\\"),
+                ts);
+        }
+    }
+    // #endregion
 
     let mut manifest = read_manifest(&install_dir).unwrap_or_default();
     manifest.install_dir = install_dir.clone();

@@ -5,7 +5,7 @@ import { Loader, RefreshCw } from "lucide-react";
 import LogScroller from "../components/LogScroller";
 import type { AppManifest, LogEntry } from "../types";
 
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 interface Props {
   manifest: AppManifest | null;

@@ -23,7 +23,7 @@ import {
 } from "lucide-react";
 import type { SysCheckItem } from "../types";
 
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 interface Props {
   onDone: (installDir: string) => void;
@@ -75,7 +75,7 @@ export default function SysCheck({ onDone }: Props) {
   useEffect(() => {
     async function init() {
       // #region agent log
-      fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:init',message:'init called',data:{isTauri,hasTauriGlobal:'__TAURI__' in window},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+      fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:init',message:'init called',data:{isTauri,hasInternals:'__TAURI_INTERNALS__' in window,hasLegacy:'__TAURI__' in window},timestamp:Date.now(),runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
       // #endregion
       if (!isTauri) {
         const fallback = "C:\\\\OpenClaw";

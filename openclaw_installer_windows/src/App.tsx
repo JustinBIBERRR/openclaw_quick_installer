@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
-const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 import type { AppManifest, WizardStep, LogEntry, GatewayStatus } from "./types";
 import SysCheck from "./pages/SysCheck";
 import Installing from "./pages/Installing";

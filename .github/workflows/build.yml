@@ -58,6 +58,7 @@ jobs:
       - name: Download bundled Node.js runtime
         shell: pwsh
         run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           $dest = "src-tauri/resources"
           New-Item -ItemType Directory -Force -Path $dest | Out-Null
           $url  = "https://npmmirror.com/mirrors/node/v22.11.0/node-v22.11.0-win-x64.zip"
