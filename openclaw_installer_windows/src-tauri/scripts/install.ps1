@@ -38,12 +38,42 @@ try {
     exit 1
 }
 
-# ── 阶段 2: 解压 Node.js ─────────────────────────────────────────────────
+# ── 阶段 2: Node.js 运行时 ────────────────────────────────────────────────
 
 $RUNTIME_DIR = "$InstallDir\runtime\node"
+$useSystemNode = $false
+
+# 优先检测系统已安装的 Node.js（v18+ 即可）
+if (-not (Test-Path "$RUNTIME_DIR\node.exe")) {
+    try {
+        $sysNode = Get-Command node.exe -ErrorAction SilentlyContinue
+        if ($sysNode) {
+            $sysVer = & $sysNode.Source --version 2>&1
+            # #region agent log
+            Dbg "install.ps1:sys-node" "system node detected" @{path=$sysNode.Source;version="$sysVer"}
+            # #endregion
+            if ($sysVer -match "v(\d+)\.") {
+                $major = [int]$Matches[1]
+                if ($major -ge 18) {
+                    Log-OK "检测到系统 Node.js: $sysVer（满足要求 >= v18），跳过下载"
+                    $RUNTIME_DIR = Split-Path $sysNode.Source
+                    $useSystemNode = $true
+                } else {
+                    Log-Info "系统 Node.js 版本 $sysVer 过低（需 >= v18），将使用内置版本"
+                }
+            }
+        }
+    } catch {
+        # #region agent log
+        Dbg "install.ps1:sys-node-err" "system node check failed" @{error=$_.ToString()}
+        # #endregion
+    }
+}
 
 if (Test-Path "$RUNTIME_DIR\node.exe") {
     Log-OK "Node.js 已存在，跳过解压"
+} elseif ($useSystemNode) {
+    Log-OK "使用系统 Node.js，跳过下载和解压"
 } else {
     # 若 zip 不存在（portable exe 场景），则自动下载
     if (-not $NodeZipPath -or -not (Test-Path $NodeZipPath)) {
