@@ -33,9 +33,7 @@ try {
     exit 1
 }
 
-# 配置 OpenClaw 数据目录（供后续 openclaw 命令读取）
-$env:OPENCLAW_CONFIG_PATH = "$InstallDir\data\openclaw.json"
-$env:OPENCLAW_HOME = "$InstallDir\data"
+# OpenClaw 使用默认目录 ~/.openclaw/，无需注入环境变量
 
 # ── 阶段 1: 检测 / 安装 Node.js ─────────────────────────────────────────────
 

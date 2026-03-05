@@ -514,7 +514,17 @@ pub async fn validate_api_key(
     .map_err(|e| e.to_string())
 }
 
-/// 保存 API Key 配置
+/// 获取 OpenClaw 默认配置目录 (~/.openclaw/)
+fn openclaw_config_dir() -> Result<PathBuf, String> {
+    let profile = std::env::var("USERPROFILE")
+        .map_err(|_| "无法获取 USERPROFILE 环境变量".to_string())?;
+    let dir = PathBuf::from(&profile).join(".openclaw");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("创建 .openclaw 目录失败: {e}"))?;
+    Ok(dir)
+}
+
+/// 保存 API Key 配置（写到 ~/.openclaw/openclaw.json，与 openclaw 官方一致）
 #[tauri::command]
 pub fn save_api_key(
     install_dir: String,
@@ -532,13 +542,23 @@ pub fn save_api_key(
         return Ok(());
     }
 
-    let config_path = Path::new(&install_dir).join("data").join("openclaw.json");
-    std::fs::create_dir_all(config_path.parent().unwrap())
-        .map_err(|e| format!("创建配置目录失败: {e}"))?;
+    let config_dir = openclaw_config_dir()?;
+    let config_path = config_dir.join("openclaw.json");
 
-    let config = build_openclaw_config(&provider, &api_key, &base_url, &model);
+    // 如果已有配置文件，合并而非覆盖
+    let mut config = if config_path.exists() {
+        let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+        serde_json::from_str(&existing).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let new_provider = build_openclaw_config(&provider, &api_key, &base_url, &model);
+    merge_json(&mut config, &new_provider);
+
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    std::fs::write(&config_path, json).map_err(|e| format!("写入配置失败: {e}"))?;
+    std::fs::write(&config_path, json)
+        .map_err(|e| format!("写入配置失败: {e}"))?;
 
     manifest.api_provider = provider;
     manifest.api_key_configured = true;
@@ -547,6 +567,18 @@ pub fn save_api_key(
     }
     write_manifest(&manifest)?;
     Ok(())
+}
+
+/// 深度合并两个 JSON Value（src 覆盖到 dst）
+fn merge_json(dst: &mut serde_json::Value, src: &serde_json::Value) {
+    match (dst, src) {
+        (serde_json::Value::Object(d), serde_json::Value::Object(s)) => {
+            for (k, v) in s {
+                merge_json(d.entry(k.clone()).or_insert(serde_json::Value::Null), v);
+            }
+        }
+        (dst, src) => *dst = src.clone(),
+    }
 }
 
 fn build_openclaw_config(
@@ -659,11 +691,6 @@ pub async fn start_gateway(
         return Ok(manifest);
     }
 
-    // 设置环境变量
-    let config_path = Path::new(&install_dir).join("data").join("openclaw.json");
-    let data_dir = Path::new(&install_dir).join("data");
-    std::fs::create_dir_all(&data_dir).ok();
-
     let cmd_str = format!(
         "{} gateway --port {} --allow-unconfigured --auth none",
         oc_cmd.display(), port
@@ -673,12 +700,10 @@ pub async fn start_gateway(
         "message": format!("执行: {}", cmd_str)
     })).ok();
 
-    // 直接启动 openclaw gateway，pipe stdout/stderr
+    // 直接启动 openclaw gateway，不注入路径环境变量，让 openclaw 使用默认 ~/.openclaw/
     let mut child_cmd = Command::new("cmd");
     child_cmd.args(["/c", &oc_cmd.to_string_lossy()])
         .args(["gateway", "--port", &port.to_string(), "--allow-unconfigured", "--auth", "none"])
-        .env("OPENCLAW_CONFIG_PATH", config_path.to_string_lossy().as_ref())
-        .env("OPENCLAW_HOME", data_dir.to_string_lossy().as_ref())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     no_window!(child_cmd);
