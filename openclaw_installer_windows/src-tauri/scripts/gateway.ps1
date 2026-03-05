@@ -69,17 +69,31 @@ if ($Action -eq "start") {
     Log-Info "配置文件: $CONFIG_FILE"
     Log-Info "日志文件: $LOG_FILE"
 
+    # 解析 openclaw 可执行文件完整路径（npm -g 安装生成 .cmd，Start-Process 需要完整路径）
+    $ocExe = (Get-Command "openclaw" -ErrorAction SilentlyContinue).Source
+    if (-not $ocExe) {
+        try {
+            $npmPrefix = (& npm config get prefix 2>&1).Trim()
+            $ocExe = "$npmPrefix\openclaw.cmd"
+        } catch {}
+    }
+    if (-not $ocExe -or -not (Test-Path $ocExe)) {
+        Log-Error "找不到 openclaw 可执行文件，请确认已完成安装（npm install -g openclaw）"
+        Write-Output "[RESULT]failed"
+        exit 1
+    }
+    Log-Info "openclaw 路径: $ocExe"
+
     $procArgs = @("gateway", "--port", $Port, "--allow-unconfigured", "--auth", "none")
 
-    # 使用系统 PATH 中的 openclaw（npm install -g 后可用）
-    $proc = Start-Process -FilePath "openclaw" `
+    $proc = Start-Process -FilePath $ocExe `
         -ArgumentList $procArgs `
         -RedirectStandardOutput $LOG_FILE `
         -RedirectStandardError  $LOG_FILE `
         -PassThru -WindowStyle Hidden
 
     if (-not $proc -or -not $proc.Id) {
-        Log-Error "无法启动 openclaw，请确认已完成安装（npm install -g openclaw）"
+        Log-Error "无法启动 openclaw 进程"
         Write-Output "[RESULT]failed"
         exit 1
     }
@@ -138,7 +152,8 @@ elseif ($Action -eq "stop") {
     $stopped = $false
 
     try {
-        & openclaw gateway stop 2>&1 | Out-Null
+        $ocStop = (Get-Command "openclaw" -ErrorAction SilentlyContinue).Source
+        if ($ocStop) { & $ocStop gateway stop 2>&1 | Out-Null }
         Start-Sleep -Milliseconds 800
         if (-not (Test-GatewayHealth)) {
             $stopped = $true

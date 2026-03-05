@@ -179,36 +179,33 @@ Write-Output "[PROGRESS:2/4] 安装 OpenClaw CLI"
 Log-Info "正在安装 openclaw（约 1-3 分钟）..."
 Log-Dim "来源: registry.npmmirror.com"
 
-$npmLogOut = "$InstallDir\logs\npm-install.log"
 $npmLogErr = "$InstallDir\logs\npm-install-err.log"
+$npmExitCode = 0
 try {
-    $proc = Start-Process -FilePath "npm.cmd" -ArgumentList @(
-        "install", "-g", "openclaw",
-        "--registry", "https://registry.npmmirror.com",
-        "--no-audit", "--no-fund"
-    ) -NoNewWindow -PassThru -Wait -RedirectStandardOutput $npmLogOut -RedirectStandardError $npmLogErr
+    # 使用调用运算符实时流式输出，stderr 单独重定向避免混入
+    $npmOutput = & npm install -g openclaw `
+        --registry https://registry.npmmirror.com `
+        --no-audit --no-fund 2>$npmLogErr | ForEach-Object {
+            if ($_ -match "added \d+ package|changed \d+") { Log-OK $_; $_ }
+            elseif ($_ -match "warn|WARN") { Log-Warn $_; $_ }
+            elseif ($_.Trim() -ne "") { Log-Dim $_; $_ }
+        }
+    $npmExitCode = $LASTEXITCODE
 
-    if (Test-Path $npmLogOut) {
-        Get-Content $npmLogOut | ForEach-Object {
-            if ($_ -match "added \d+ package") { Log-OK $_ }
-            elseif ($_ -match "warn") { Log-Warn $_ }
-            else { Log-Dim $_ }
+    # 输出 stderr（过滤纯信息行，只显示警告/错误）
+    if (Test-Path $npmLogErr) {
+        Get-Content $npmLogErr | ForEach-Object {
+            if ($_ -match "ERR!|error") { Log-Error $_ }
+            elseif ($_ -match "WARN|warn") { Log-Warn $_ }
+            elseif ($_.Trim() -ne "" -and $_ -notmatch "^npm notice") { Log-Dim $_ }
         }
     }
 
-    $errContent = ""
-    $outContent = ""
-    if (Test-Path $npmLogErr) { $errContent = [string](Get-Content $npmLogErr -Raw) }
-    if (Test-Path $npmLogOut) { $outContent = [string](Get-Content $npmLogOut -Raw) }
-    $errLen = if ($errContent) { $errContent.Length } else { 0 }
-    $outLen = if ($outContent) { $outContent.Length } else { 0 }
-    Dbg "install.ps1:npm-install-done" "npm install finished" @{exitCode=$proc.ExitCode;stderrLen=$errLen;stdoutLen=$outLen}
+    $errContent = if (Test-Path $npmLogErr) { [string](Get-Content $npmLogErr -Raw) } else { "" }
+    Dbg "install.ps1:npm-install-done" "npm install finished" @{exitCode=$npmExitCode;stderrLen=$errContent.Length}
 
-    if ($proc.ExitCode -ne 0) {
-        if (Test-Path $npmLogErr) {
-            Get-Content $npmLogErr | ForEach-Object { Log-Error $_ }
-        }
-        Log-Error "npm install 失败（退出码 $($proc.ExitCode)）"
+    if ($npmExitCode -ne 0) {
+        Log-Error "npm install 失败（退出码 $npmExitCode）"
         exit 1
     }
 } catch {
