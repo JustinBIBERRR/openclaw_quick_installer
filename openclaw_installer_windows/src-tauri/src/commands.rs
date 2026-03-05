@@ -803,6 +803,40 @@ pub async fn start_gateway(
     }
 }
 
+/// 强制终止 Gateway 进程（直接 taskkill，不走 PowerShell 脚本）
+#[tauri::command]
+pub fn kill_gateway_process(install_dir: String, port: u16) -> Result<(), String> {
+    // 1) 按 manifest 中记录的 PID 杀（/T 杀整棵进程树）
+    if let Some(m) = read_manifest(&install_dir) {
+        if let Some(pid) = m.gateway_pid {
+            let mut cmd = Command::new("taskkill");
+            cmd.args(["/PID", &pid.to_string(), "/F", "/T"])
+                .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+            no_window!(cmd);
+            cmd.output().ok();
+        }
+    }
+
+    // 2) 按端口查进程再杀（兜底：PID 可能已过期或不准）
+    let ps = format!(
+        "(Get-NetTCPConnection -LocalPort {} -State Listen -ErrorAction SilentlyContinue).OwningProcess | Sort-Object -Unique | ForEach-Object {{ taskkill /PID $_ /F /T 2>$null }}",
+        port
+    );
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-Command", &ps])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    no_window!(cmd);
+    cmd.output().ok();
+
+    // 清除 manifest 中的 PID
+    if let Some(mut m) = read_manifest(&install_dir) {
+        m.gateway_pid = None;
+        write_manifest(&m).ok();
+    }
+
+    Ok(())
+}
+
 /// 后台快速启动 Gateway（管理器用）—— 完全隐藏窗口
 #[tauri::command]
 pub fn start_gateway_bg(app: AppHandle, install_dir: String, port: u16) -> Result<(), String> {
@@ -873,6 +907,38 @@ pub fn open_url(url: String) -> Result<(), String> {
         .stderr(Stdio::null());
     no_window!(cmd);
     cmd.spawn().map_err(|e| format!("打开 URL 失败: {e}"))?;
+    Ok(())
+}
+
+/// 用系统默认编辑器打开 OpenClaw 配置文件
+#[tauri::command]
+pub fn open_config_file() -> Result<(), String> {
+    let config_dir = openclaw_config_dir()?;
+    let config_path = config_dir.join("openclaw.json");
+    if !config_path.exists() {
+        std::fs::write(&config_path, "{}\n")
+            .map_err(|e| format!("创建配置文件失败: {e}"))?;
+    }
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/c", "start", "", &config_path.to_string_lossy()])
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    no_window!(cmd);
+    cmd.spawn().map_err(|e| format!("打开文件失败: {e}"))?;
+    Ok(())
+}
+
+/// 用资源管理器打开指定目录
+#[tauri::command]
+pub fn open_folder(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    if !p.exists() {
+        std::fs::create_dir_all(p).ok();
+    }
+    let mut cmd = Command::new("explorer");
+    cmd.arg(&path)
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    no_window!(cmd);
+    cmd.spawn().map_err(|e| format!("打开目录失败: {e}"))?;
     Ok(())
 }
 

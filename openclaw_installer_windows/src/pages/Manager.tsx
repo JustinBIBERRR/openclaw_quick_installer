@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  ExternalLink, RefreshCw, Square, Play, Settings,
-  Trash2, Key, ChevronRight
+  ExternalLink, RefreshCw, Square, Play, FolderOpen,
+  Trash2, ChevronRight, Loader, FileEdit
 } from "lucide-react";
 import StatusDot from "../components/StatusDot";
 import TitleBar from "../components/TitleBar";
 import type { AppManifest, GatewayStatus } from "../types";
+
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 interface Props {
   manifest: AppManifest;
@@ -47,12 +49,12 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
         onStatusChange("starting");
         await invoke("start_gateway_bg", { installDir: manifest.install_dir, port });
         setTimeout(checkStatus, 3000);
-      } else if (action === "stop") {
-        await invoke("stop_gateway", { installDir: manifest.install_dir });
+      } else if (action === "stop" || action === "force_stop") {
+        await invoke("kill_gateway_process", { installDir: manifest.install_dir, port });
         onStatusChange("stopped");
       } else if (action === "restart") {
         onStatusChange("starting");
-        await invoke("stop_gateway", { installDir: manifest.install_dir });
+        await invoke("kill_gateway_process", { installDir: manifest.install_dir, port });
         await new Promise((r) => setTimeout(r, 1500));
         await invoke("start_gateway_bg", { installDir: manifest.install_dir, port });
         setTimeout(checkStatus, 3000);
@@ -131,17 +133,29 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
                   停止
                 </button>
               </>
+            ) : gatewayStatus === "starting" ? (
+              <div className="flex gap-2 w-full">
+                <div className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-gray-800 text-gray-400 text-sm rounded-lg">
+                  <RefreshCw size={14} className="animate-spin" />
+                  启动中...
+                </div>
+                <button
+                  onClick={() => doAction("force_stop")}
+                  disabled={actionLoading !== null}
+                  className="flex items-center justify-center gap-2 px-4 py-2.5 bg-red-900/50 hover:bg-red-800/60 text-red-300 text-sm rounded-lg transition-colors disabled:opacity-50"
+                >
+                  <Square size={14} />
+                  停止
+                </button>
+              </div>
             ) : (
               <button
                 onClick={() => doAction("start")}
-                disabled={actionLoading !== null || gatewayStatus === "starting"}
+                disabled={actionLoading !== null}
                 className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-brand-500 hover:bg-brand-600 disabled:bg-gray-700 disabled:text-gray-500 text-gray-950 font-semibold text-sm rounded-lg transition-colors"
               >
-                {gatewayStatus === "starting"
-                  ? <RefreshCw size={14} className="animate-spin" />
-                  : <Play size={14} />
-                }
-                {gatewayStatus === "starting" ? "启动中..." : "启动 Gateway"}
+                <Play size={14} />
+                启动 Gateway
               </button>
             )}
           </div>
@@ -150,24 +164,49 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
         {/* 快捷操作列表 */}
         <div className="bg-gray-900 rounded-xl border border-gray-700 divide-y divide-gray-800">
           <ActionRow
-            icon={<Key size={16} />}
+            icon={<FileEdit size={16} />}
             label="修改 API Key"
-            desc={manifest.api_key_configured ? "更换已配置的 API Key" : "立即配置 API Key"}
-            onClick={() => {/* TODO: 打开 API Key 配置页 */}}
+            desc={manifest.api_key_configured ? "编辑 ~/.openclaw/openclaw.json 配置文件" : "打开配置文件设置 API Key"}
+            onClick={async () => {
+              try {
+                await invoke("open_config_file");
+              } catch (e) {
+                console.error("打开配置文件失败:", e);
+              }
+            }}
           />
           <ActionRow
-            icon={<Settings size={16} />}
+            icon={<FolderOpen size={16} />}
             label="安装目录"
             desc={manifest.install_dir}
-            onClick={() => {}}
+            onClick={async () => {
+              try {
+                await invoke("open_folder", { path: manifest.install_dir });
+              } catch (e) {
+                console.error("打开目录失败:", e);
+              }
+            }}
           />
           <ActionRow
             icon={<Trash2 size={16} className="text-red-400" />}
             label={<span className="text-red-400">卸载 OpenClaw</span>}
-            desc="删除所有已安装的文件和配置"
+            desc="停止 Gateway 并删除所有已安装的文件"
+            loading={actionLoading === "uninstall"}
             onClick={async () => {
-              if (confirm("确定要卸载 OpenClaw 吗？此操作不可撤销。")) {
+              if (!confirm("确定要卸载 OpenClaw 吗？\n\n将停止 Gateway 并删除安装目录。\n（~/.openclaw/ 配置文件会保留）")) return;
+              setActionLoading("uninstall");
+              try {
+                await invoke("kill_gateway_process", { installDir: manifest.install_dir, port });
                 await invoke("uninstall", { installDir: manifest.install_dir });
+                alert("卸载完成！程序将关闭。");
+                if (isTauri) {
+                  const { getCurrentWindow } = await import("@tauri-apps/api/window");
+                  await getCurrentWindow().close();
+                }
+              } catch (e) {
+                alert(`卸载失败: ${e}`);
+              } finally {
+                setActionLoading(null);
               }
             }}
           />
@@ -186,19 +225,24 @@ function ActionRow({
   icon,
   label,
   desc,
+  loading,
   onClick,
 }: {
   icon: React.ReactNode;
   label: React.ReactNode;
   desc: string;
+  loading?: boolean;
   onClick: () => void;
 }) {
   return (
     <button
       onClick={onClick}
-      className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-gray-800 transition-colors text-left"
+      disabled={loading}
+      className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-gray-800 transition-colors text-left disabled:opacity-50"
     >
-      <span className="text-gray-400 flex-shrink-0">{icon}</span>
+      <span className="text-gray-400 flex-shrink-0">
+        {loading ? <Loader size={16} className="animate-spin" /> : icon}
+      </span>
       <div className="flex-1 min-w-0">
         <div className="text-sm text-gray-200">{label}</div>
         <div className="text-xs text-gray-500 mt-0.5 truncate">{desc}</div>
