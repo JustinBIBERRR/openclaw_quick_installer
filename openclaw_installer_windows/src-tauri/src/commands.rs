@@ -566,102 +566,216 @@ fn build_openclaw_config(
                 provider_id: {
                     "apiKey": api_key,
                     "baseUrl": base_url,
-                    "models": [{ "id": model }]
+                    "models": [{ "id": model, "name": model }]
                 }
             }
         }
     })
 }
 
-/// 启动 Gateway，等待健康检查
+/// 在系统 PATH 中查找 openclaw.cmd（Rust 实现，不依赖 PowerShell）
+fn find_openclaw_cmd() -> Option<PathBuf> {
+    // 先刷新 PATH：读注册表拿最新值
+    let machine_path = std::env::var("PATH").unwrap_or_default();
+    // 额外拼入常见 npm 全局目录
+    let appdata = std::env::var("APPDATA").unwrap_or_default();
+    let extra_npm = format!("{}\\npm", appdata);
+    let search_path = format!("{};{}", machine_path, extra_npm);
+
+    for dir in search_path.split(';') {
+        let candidate = PathBuf::from(dir).join("openclaw.cmd");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    // 尝试 npm config get prefix
+    let mut cmd = Command::new("npm");
+    cmd.args(["config", "get", "prefix"])
+        .stdout(Stdio::piped()).stderr(Stdio::null());
+    no_window!(cmd);
+    if let Ok(o) = cmd.output() {
+        let prefix = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if !prefix.is_empty() {
+            let candidate = PathBuf::from(&prefix).join("openclaw.cmd");
+            if candidate.exists() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    None
+}
+
+/// 刷新当前进程的 PATH 环境变量（从注册表读最新值）
+fn refresh_path() {
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-Command",
+        "[System.Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('PATH','User')"])
+        .stdout(Stdio::piped()).stderr(Stdio::null());
+    no_window!(cmd);
+    if let Ok(o) = cmd.output() {
+        let new_path = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if !new_path.is_empty() {
+            std::env::set_var("PATH", &new_path);
+        }
+    }
+}
+
+/// 启动 Gateway：直接运行 openclaw gateway，流式输出到 UI
 #[tauri::command]
 pub async fn start_gateway(
     window: Window,
-    app: AppHandle,
+    _app: AppHandle,
     install_dir: String,
     port: u16,
 ) -> Result<AppManifest, String> {
-    let script = get_script_path(&app, "gateway.ps1")?;
-    let port_str = port.to_string();
-
-    // #region agent log
-    {
-        use std::io::Write as _;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
-            r"d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
-        ) {
-            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-            let _ = writeln!(f, "{{\"location\":\"commands.rs:start_gateway\",\"message\":\"gateway start\",\"data\":{{\"script\":\"{}\",\"install_dir\":\"{}\",\"port\":{}}},\"timestamp\":{},\"runId\":\"post-fix\",\"hypothesisId\":\"GW\"}}",
-                script.display().to_string().replace('\\', "\\\\"),
-                install_dir.replace('\\', "\\\\"),
-                port,
-                ts);
-        }
-    }
-    // #endregion
+    // 先刷新 PATH
+    refresh_path();
 
     window.emit("gateway-log", serde_json::json!({
         "level": "info",
-        "message": format!("脚本: {}", script.display())
+        "message": "查找 openclaw 命令..."
     })).ok();
 
-    let env_pairs = vec![
-        ("GW_ACTION".to_string(), "start".to_string()),
-        ("GW_INSTALL_DIR".to_string(), install_dir.clone()),
-        ("GW_PORT".to_string(), port_str),
-    ];
+    let oc_cmd = find_openclaw_cmd()
+        .ok_or_else(|| "找不到 openclaw.cmd，请确认已完成安装步骤".to_string())?;
 
-    let win_clone = window.clone();
-    let result = tokio::task::spawn_blocking(move || {
-        run_ps_script_streaming_sync(win_clone, script, env_pairs, "gateway-log")
-    })
-    .await
-    .map_err(|e| e.to_string())?;
+    window.emit("gateway-log", serde_json::json!({
+        "level": "ok",
+        "message": format!("openclaw: {}", oc_cmd.display())
+    })).ok();
 
-    match &result {
-        Ok(r) => {
-            window.emit("gateway-log", serde_json::json!({
-                "level": "info",
-                "message": format!("脚本结果: {}", r)
-            })).ok();
-        }
-        Err(e) => {
-            window.emit("gateway-log", serde_json::json!({
-                "level": "error",
-                "message": format!("脚本错误: {}", e)
-            })).ok();
-        }
+    // 先检测是否已经在运行
+    if tcp_port_open(port) {
+        window.emit("gateway-log", serde_json::json!({
+            "level": "ok",
+            "message": format!("Gateway 已在运行 (port {})", port)
+        })).ok();
+        let mut manifest = read_manifest(&install_dir).unwrap_or_default();
+        manifest.phase = "complete".into();
+        manifest.gateway_port = port;
+        write_manifest(&manifest)?;
+        return Ok(manifest);
     }
 
-    result?;
+    // 设置环境变量
+    let config_path = Path::new(&install_dir).join("data").join("openclaw.json");
+    let data_dir = Path::new(&install_dir).join("data");
+    std::fs::create_dir_all(&data_dir).ok();
 
-    // 健康检查：纯 TCP 连接，不再启动 PowerShell
+    let cmd_str = format!(
+        "{} gateway --port {} --allow-unconfigured --auth none",
+        oc_cmd.display(), port
+    );
     window.emit("gateway-log", serde_json::json!({
         "level": "info",
-        "message": "等待 Gateway 响应..."
+        "message": format!("执行: {}", cmd_str)
     })).ok();
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    // 直接启动 openclaw gateway，pipe stdout/stderr
+    let mut child_cmd = Command::new("cmd");
+    child_cmd.args(["/c", &oc_cmd.to_string_lossy()])
+        .args(["gateway", "--port", &port.to_string(), "--allow-unconfigured", "--auth", "none"])
+        .env("OPENCLAW_CONFIG_PATH", config_path.to_string_lossy().as_ref())
+        .env("OPENCLAW_HOME", data_dir.to_string_lossy().as_ref())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    no_window!(child_cmd);
+
+    let mut child = child_cmd.spawn()
+        .map_err(|e| format!("启动 openclaw 失败: {}", e))?;
+
+    let pid = child.id();
+    window.emit("gateway-log", serde_json::json!({
+        "level": "ok",
+        "message": format!("进程已启动 (PID: {})", pid)
+    })).ok();
+
+    // 记录 PID 到 manifest
+    let mut manifest = read_manifest(&install_dir).unwrap_or_default();
+    manifest.install_dir = install_dir.clone();
+    manifest.gateway_pid = Some(pid);
+    manifest.gateway_port = port;
+    write_manifest(&manifest).ok();
+
+    // stdout → 后台线程 → 实时 emit 到 UI
+    let stdout = child.stdout.take().unwrap();
+    let win_out = window.clone();
+    let port_for_detect = port;
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+        for line in reader.lines().map_while(Result::ok) {
+            let t = line.trim().to_string();
+            if !t.is_empty() {
+                let level = if t.to_lowercase().contains("error") || t.to_lowercase().contains("err!") {
+                    "error"
+                } else if t.to_lowercase().contains("warn") {
+                    "warn"
+                } else if t.to_lowercase().contains("listening") || t.to_lowercase().contains("ready") || t.to_lowercase().contains("started") {
+                    "ok"
+                } else {
+                    "dim"
+                };
+                win_out.emit("gateway-log", serde_json::json!({ "level": level, "message": t })).ok();
+            }
+        }
+        win_out.emit("gateway-log", serde_json::json!({
+            "level": "warn",
+            "message": format!("openclaw 进程 stdout 关闭 (port {})", port_for_detect)
+        })).ok();
+    });
+
+    // stderr → 后台线程 → 实时 emit 到 UI
+    let stderr = child.stderr.take().unwrap();
+    let win_err = window.clone();
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stderr);
+        for line in reader.lines().map_while(Result::ok) {
+            let t = line.trim().to_string();
+            if !t.is_empty() {
+                win_err.emit("gateway-log", serde_json::json!({ "level": "error", "message": t })).ok();
+            }
+        }
+    });
+
+    // 等待健康检查通过（最多 90 秒）
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    let mut ready = false;
     loop {
         if std::time::Instant::now() > deadline {
-            return Err("Gateway 启动超时（30s），可能需要更多时间或检查日志".into());
+            break;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
         if tcp_port_open(port) {
+            ready = true;
             break;
         }
     }
 
-    let mut manifest = read_manifest(&install_dir).unwrap_or_default();
-    manifest.phase = "complete".into();
-    manifest.gateway_port = port;
-    if !manifest.steps_done.contains(&"gateway_started".to_string()) {
-        manifest.steps_done.push("gateway_started".into());
-    }
-    write_manifest(&manifest)?;
-    create_desktop_shortcut(&install_dir).ok();
+    // child 进程故意不 wait/kill，让它继续在后台运行
+    // Rust 在 Windows 上 drop Child 不会终止子进程
+    std::mem::forget(child);
 
-    Ok(manifest)
+    if ready {
+        window.emit("gateway-log", serde_json::json!({
+            "level": "ok",
+            "message": format!("Gateway 已就绪 -> http://localhost:{}", port)
+        })).ok();
+
+        let mut manifest = read_manifest(&install_dir).unwrap_or_default();
+        manifest.phase = "complete".into();
+        manifest.gateway_port = port;
+        manifest.gateway_pid = Some(pid);
+        if !manifest.steps_done.contains(&"gateway_started".to_string()) {
+            manifest.steps_done.push("gateway_started".into());
+        }
+        write_manifest(&manifest)?;
+        create_desktop_shortcut(&install_dir).ok();
+        Ok(manifest)
+    } else {
+        Err(format!("Gateway 在 90 秒内未就绪，请查看上方日志排查原因"))
+    }
 }
 
 /// 后台快速启动 Gateway（管理器用）—— 完全隐藏窗口
