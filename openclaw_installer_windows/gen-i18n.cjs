@@ -188,6 +188,11 @@ export default function SysCheck({ onDone }: Props) {
     setRelaunching(true);
     try {
       await invoke("relaunch_as_admin");
+      // \u65b0\u7a97\u53e3\u5df2\u4ee5\u7ba1\u7406\u5458\u8eab\u4efd\u542f\u52a8\uff0c\u81ea\u52a8\u5173\u95ed\u5f53\u524d\u65e0\u6743\u9650\u7a97\u53e3
+      if (isTauri) {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().close();
+      }
     } catch {
       setRelaunching(false);
     }
@@ -203,118 +208,106 @@ export default function SysCheck({ onDone }: Props) {
   const canProceed = done && !adminFailed;
 
   return (
-    <div className="h-full flex flex-col px-6 py-4 gap-3 overflow-y-auto">
-      <div>
-        <h2 className="text-lg font-semibold text-gray-100">\u7cfb\u7edf\u9884\u68c0</h2>
-        <p className="text-sm text-gray-400 mt-0.5">\u6b63\u5728\u68c0\u6d4b\u5b89\u88c5\u73af\u5883\uff0c\u5168\u90e8\u901a\u8fc7\u540e\u5373\u53ef\u5f00\u59cb\u5b89\u88c5</p>
-      </div>
-
-      {adminFailed && (
-        <div className="bg-red-900/30 border border-red-700/50 rounded-lg p-4 flex flex-col gap-3">
-          <div className="flex items-start gap-3">
-            <ShieldCheck size={18} className="text-red-400 mt-0.5 flex-shrink-0" />
-            <div>
-              <p className="text-sm font-medium text-red-300">\u9700\u8981\u7ba1\u7406\u5458\u6743\u9650\u624d\u80fd\u7ee7\u7eed</p>
-              <p className="text-xs text-red-400/80 mt-1">
-                \u5b89\u88c5\u9700\u8981\u5199\u5165\u7cfb\u7edf\u76ee\u5f55\u3001\u4fee\u6539\u6ce8\u518c\u8868\u8def\u5f84\u3001\u4ee5\u53ca\u6dfb\u52a0 Windows Defender \u6392\u9664\u89c4\u5219\u3002
-              </p>
-            </div>
-          </div>
-          <div className="bg-gray-900/60 rounded-md p-3 text-xs text-gray-300 space-y-1.5">
-            <p className="font-medium text-gray-200 mb-2">\u624b\u52a8\u4ee5\u7ba1\u7406\u5458\u8eab\u4efd\u8fd0\u884c\uff1a</p>
-            <p>\u2460 \u5173\u95ed\u5f53\u524d\u7a97\u53e3</p>
-            <p>\u2461 \u627e\u5230\u5b89\u88c5\u5668 exe\uff0c<span className="text-yellow-300 font-medium">\u53f3\u952e\u5355\u51fb</span></p>
-            <p>\u2462 \u9009\u62e9<span className="text-yellow-300 font-medium">\u300c\u4ee5\u7ba1\u7406\u5458\u8eab\u4efd\u8fd0\u884c\u300d</span></p>
-            <p>\u2463 \u901a\u8fc7 UAC \u5f39\u7a97\u5373\u53ef\u7ee7\u7eed\u5b89\u88c5</p>
-          </div>
-          <button
-            onClick={handleRelaunchAsAdmin}
-            disabled={relaunching}
-            className="flex items-center justify-center gap-2 py-2 bg-red-600 hover:bg-red-500
-              disabled:bg-gray-700 disabled:text-gray-500
-              text-white text-sm font-medium rounded-lg transition-colors"
-          >
-            {relaunching
-              ? <><Loader size={13} className="animate-spin" /> \u6b63\u5728\u63d0\u6743...</>
-              : <><ShieldCheck size={13} /> \u81ea\u52a8\u91cd\u542f\u5e76\u4ee5\u7ba1\u7406\u5458\u8eab\u4efd\u8fd0\u884c</>
-            }
-          </button>
+    <div className="h-full flex flex-col overflow-hidden">
+      {/* \u9876\u90e8\u56fa\u5b9a\u533a\u57df\uff1a\u6807\u9898 + \u5b89\u88c5\u76ee\u5f55 + \u8b66\u544a\u5757 */}
+      <div className="flex-shrink-0 px-6 pt-4 pb-2 flex flex-col gap-2">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-100">\u7cfb\u7edf\u9884\u68c0</h2>
+          <p className="text-sm text-gray-400 mt-0.5">\u6b63\u5728\u68c0\u6d4b\u5b89\u88c5\u73af\u5883\uff0c\u5168\u90e8\u901a\u8fc7\u540e\u5373\u53ef\u5f00\u59cb\u5b89\u88c5</p>
         </div>
-      )}
 
-      {webview2Missing && (
-        <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-lg p-3 flex items-start gap-3">
-          <AlertCircle size={15} className="text-yellow-400 mt-0.5 flex-shrink-0" />
-          <div className="text-xs text-yellow-300/90">
-            <p className="font-medium mb-1">\u9700\u8981\u5b89\u88c5 Windows \u7cfb\u7edf\u6d4f\u89c8\u5668\u5185\u6838 (WebView2)</p>
-            <p className="text-yellow-400/70 mb-2">
-              OpenClaw \u754c\u9762\u4f9d\u8d56\u6b64\u5185\u6838\u6e32\u67d3\uff0cWindows 11 \u5df2\u5185\u7f6e\uff0cWindows 10 \u9700\u989d\u5916\u5b89\u88c5\uff08\u7ea6 100MB\uff09\uff0c\u5b89\u88c5\u5b8c\u6210\u540e\u91cd\u542f\u5b89\u88c5\u5668\u5373\u53ef\u3002
-            </p>
-            <button
-              onClick={() => invoke("open_url", { url: "https://go.microsoft.com/fwlink/p/?LinkId=2124703" })}
-              className="flex items-center gap-1.5 text-yellow-300 hover:text-yellow-200 underline underline-offset-2"
-            >
-              <ExternalLink size={11} />
-              \u70b9\u51fb\u4e0b\u8f7d WebView2 \u8fd0\u884c\u65f6\uff08\u5fae\u8f6f\u5b98\u65b9\uff09
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* \u5b89\u88c5\u76ee\u5f55\u9009\u62e9 */}
-      {installDir && (
-        <div className="bg-gray-900 rounded-lg border border-gray-700 overflow-hidden">
-          <div className="flex items-center gap-3 px-4 py-3">
-            <FolderOpen size={15} className="text-gray-500 flex-shrink-0" />
-            <div className="flex-1 min-w-0">
-              <div className="text-xs text-gray-500 mb-0.5">
-                Node.js \u8fd0\u884c\u65f6\u548c OpenClaw \u7a0b\u5e8f\u5c06\u5b89\u88c5\u5230\uff1a
+        {/* \u5b89\u88c5\u76ee\u5f55\uff1a\u59cb\u7ec8\u663e\u793a\uff0c\u4e0d\u88ab\u5176\u4ed6\u5185\u5bb9\u6324\u8d70 */}
+        {installDir && (
+          <div className="bg-gray-900 rounded-lg border border-gray-700 overflow-hidden">
+            <div className="flex items-center gap-2 px-3 py-2">
+              <FolderOpen size={14} className="text-gray-500 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-[11px] text-gray-500">\u5b89\u88c5\u76ee\u5f55\uff1a</div>
+                <div className="font-mono text-brand-400 text-xs truncate">{installDir}</div>
               </div>
-              <div className="font-mono text-brand-400 text-sm break-all">{installDir}</div>
+              <button
+                onClick={handlePickFolder}
+                className="flex items-center gap-1 px-2 py-1 text-[11px] bg-gray-700 hover:bg-gray-600
+                  rounded border border-gray-600 text-gray-300 transition-colors whitespace-nowrap flex-shrink-0"
+              >
+                <FolderSearch size={12} />
+                \u66f4\u6539
+              </button>
+            </div>
+          </div>
+        )}
+
+        {adminFailed && (
+          <div className="bg-red-900/30 border border-red-700/50 rounded-lg p-3 flex flex-col gap-2">
+            <div className="flex items-start gap-2">
+              <ShieldCheck size={16} className="text-red-400 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-red-300">\u9700\u8981\u7ba1\u7406\u5458\u6743\u9650\u624d\u80fd\u7ee7\u7eed</p>
+                <p className="text-xs text-red-400/80 mt-0.5">
+                  \u5b89\u88c5\u9700\u8981\u5199\u5165\u7cfb\u7edf\u76ee\u5f55\u3001\u4fee\u6539\u6ce8\u518c\u8868\u8def\u5f84\u3001\u6dfb\u52a0 Windows Defender \u6392\u9664\u89c4\u5219\u3002
+                </p>
+              </div>
             </div>
             <button
-              onClick={handlePickFolder}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600
-                rounded border border-gray-600 text-gray-300 transition-colors whitespace-nowrap flex-shrink-0"
+              onClick={handleRelaunchAsAdmin}
+              disabled={relaunching}
+              className="flex items-center justify-center gap-2 py-1.5 bg-red-600 hover:bg-red-500
+                disabled:bg-gray-700 disabled:text-gray-500
+                text-white text-sm font-medium rounded-lg transition-colors"
             >
-              <FolderSearch size={13} />
-              \u66f4\u6539\u76ee\u5f55
+              {relaunching
+                ? <><Loader size={13} className="animate-spin" /> \u6b63\u5728\u63d0\u6743\uff0c\u5f53\u524d\u7a97\u53e3\u5c06\u81ea\u52a8\u5173\u95ed...</>
+                : <><ShieldCheck size={13} /> \u81ea\u52a8\u91cd\u542f\u5e76\u4ee5\u7ba1\u7406\u5458\u8eab\u4efd\u8fd0\u884c</>
+              }
             </button>
           </div>
-          <div className="border-t border-gray-800 px-4 py-2">
-            <div className="text-[11px] text-gray-600 space-y-0.5">
-              <p>\u2713 \u5b89\u88c5\u65f6\u81ea\u52a8\u521b\u5efa\uff0c\u5f53\u524d\u76ee\u5f55\u4e0d\u5b58\u5728\u662f\u6b63\u5e38\u7684</p>
-              <p>\u2713 \u8def\u5f84\u987b\u4e3a\u7eaf\u82f1\u6587\u4e14\u4e0d\u542b\u7a7a\u683c\uff0c\u5426\u5219 Node.js \u65e0\u6cd5\u6b63\u5e38\u5de5\u4f5c</p>
-              <p>\u2713 OpenClaw \u4e2a\u4eba\u914d\u7f6e\u4f1a\u53e6\u5916\u4fdd\u5b58\u5728 <span className="text-gray-500 font-mono">%USERPROFILE%\\.openclaw</span> \u4e2d</p>
-            </div>
-          </div>
-        </div>
-      )}
+        )}
 
-      <div className="bg-gray-900 rounded-lg border border-gray-700 divide-y divide-gray-800/80">
-        {checks.map((c) => (
-          <div key={c.key} className="flex items-start gap-3 px-4 py-3">
-            <div className="flex-shrink-0 mt-0.5">{statusIcon(c.status)}</div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm text-gray-200">{c.label}</div>
-              <div className={\`text-xs mt-0.5
-                \${c.status === "ok"       ? "text-gray-500" : ""}
-                \${c.status === "warn"     ? "text-yellow-500" : ""}
-                \${c.status === "error"    ? "text-red-400" : ""}
-                \${c.status === "checking" ? "text-gray-600" : ""}
-              \`}>{c.detail}</div>
-              {c.status !== "checking" && (
-                <div className="text-[10px] text-gray-600 mt-0.5">
-                  {CHECK_META[c.key]?.tip}
-                </div>
-              )}
+        {webview2Missing && (
+          <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-lg p-2.5 flex items-start gap-2">
+            <AlertCircle size={14} className="text-yellow-400 mt-0.5 flex-shrink-0" />
+            <div className="text-xs text-yellow-300/90">
+              <p className="font-medium">\u9700\u8981\u5b89\u88c5 Windows \u7cfb\u7edf\u6d4f\u89c8\u5668\u5185\u6838 (WebView2)</p>
+              <button
+                onClick={() => invoke("open_url", { url: "https://go.microsoft.com/fwlink/p/?LinkId=2124703" })}
+                className="flex items-center gap-1 mt-1 text-yellow-300 hover:text-yellow-200 underline underline-offset-2"
+              >
+                <ExternalLink size={11} />
+                \u70b9\u51fb\u4e0b\u8f7d WebView2 \u8fd0\u884c\u65f6\uff08\u5fae\u8f6f\u5b98\u65b9\uff09
+              </button>
             </div>
           </div>
-        ))}
+        )}
       </div>
 
+      {/* \u53ef\u6eda\u52a8\u533a\u57df\uff1a\u68c0\u6d4b\u5217\u8868 */}
+      <div className="flex-1 overflow-y-auto px-6 pb-2">
+        <div className="bg-gray-900 rounded-lg border border-gray-700 divide-y divide-gray-800/80">
+          {checks.map((c) => (
+            <div key={c.key} className="flex items-start gap-3 px-4 py-3">
+              <div className="flex-shrink-0 mt-0.5">{statusIcon(c.status)}</div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-gray-200">{c.label}</div>
+                <div className={\`text-xs mt-0.5
+                  \${c.status === "ok"       ? "text-gray-500" : ""}
+                  \${c.status === "warn"     ? "text-yellow-500" : ""}
+                  \${c.status === "error"    ? "text-red-400" : ""}
+                  \${c.status === "checking" ? "text-gray-600" : ""}
+                \`}>{c.detail}</div>
+                {c.status !== "checking" && (
+                  <div className="text-[10px] text-gray-600 mt-0.5">
+                    {CHECK_META[c.key]?.tip}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* \u5e95\u90e8\u56fa\u5b9a\u533a\u57df\uff1a\u72b6\u6001 + \u64cd\u4f5c\u6309\u9215 */}
       {done && (
-        <div className="flex items-center justify-between flex-shrink-0">
+        <div className="flex-shrink-0 flex items-center justify-between px-6 py-3 border-t border-gray-800">
           {adminFailed ? (
             <p className="text-xs text-red-400">\u8bf7\u5148\u4ee5\u7ba1\u7406\u5458\u8eab\u4efd\u91cd\u65b0\u8fd0\u884c\u5b89\u88c5\u5668</p>
           ) : checks.some((c) => c.status === "warn") ? (

@@ -172,6 +172,11 @@ export default function SysCheck({ onDone }: Props) {
     setRelaunching(true);
     try {
       await invoke("relaunch_as_admin");
+      // 新窗口已以管理员身份启动，自动关闭当前无权限窗口
+      if (isTauri) {
+        const { getCurrentWindow } = await import("@tauri-apps/api/window");
+        await getCurrentWindow().close();
+      }
     } catch {
       setRelaunching(false);
     }
@@ -187,118 +192,106 @@ export default function SysCheck({ onDone }: Props) {
   const canProceed = done && !adminFailed;
 
   return (
-    <div className="h-full flex flex-col px-6 py-4 gap-3 overflow-y-auto">
-      <div>
-        <h2 className="text-lg font-semibold text-gray-100">系统预检</h2>
-        <p className="text-sm text-gray-400 mt-0.5">正在检测安装环境，全部通过后即可开始安装</p>
-      </div>
-
-      {adminFailed && (
-        <div className="bg-red-900/30 border border-red-700/50 rounded-lg p-4 flex flex-col gap-3">
-          <div className="flex items-start gap-3">
-            <ShieldCheck size={18} className="text-red-400 mt-0.5 flex-shrink-0" />
-            <div>
-              <p className="text-sm font-medium text-red-300">需要管理员权限才能继续</p>
-              <p className="text-xs text-red-400/80 mt-1">
-                安装需要写入系统目录、修改注册表路径、以及添加 Windows Defender 排除规则。
-              </p>
-            </div>
-          </div>
-          <div className="bg-gray-900/60 rounded-md p-3 text-xs text-gray-300 space-y-1.5">
-            <p className="font-medium text-gray-200 mb-2">手动以管理员身份运行：</p>
-            <p>① 关闭当前窗口</p>
-            <p>② 找到安装器 exe，<span className="text-yellow-300 font-medium">右键单击</span></p>
-            <p>③ 选择<span className="text-yellow-300 font-medium">「以管理员身份运行」</span></p>
-            <p>④ 通过 UAC 弹窗即可继续安装</p>
-          </div>
-          <button
-            onClick={handleRelaunchAsAdmin}
-            disabled={relaunching}
-            className="flex items-center justify-center gap-2 py-2 bg-red-600 hover:bg-red-500
-              disabled:bg-gray-700 disabled:text-gray-500
-              text-white text-sm font-medium rounded-lg transition-colors"
-          >
-            {relaunching
-              ? <><Loader size={13} className="animate-spin" /> 正在提权...</>
-              : <><ShieldCheck size={13} /> 自动重启并以管理员身份运行</>
-            }
-          </button>
+    <div className="h-full flex flex-col overflow-hidden">
+      {/* 顶部固定区域：标题 + 安装目录 + 警告块 */}
+      <div className="flex-shrink-0 px-6 pt-4 pb-2 flex flex-col gap-2">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-100">系统预检</h2>
+          <p className="text-sm text-gray-400 mt-0.5">正在检测安装环境，全部通过后即可开始安装</p>
         </div>
-      )}
 
-      {webview2Missing && (
-        <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-lg p-3 flex items-start gap-3">
-          <AlertCircle size={15} className="text-yellow-400 mt-0.5 flex-shrink-0" />
-          <div className="text-xs text-yellow-300/90">
-            <p className="font-medium mb-1">需要安装 Windows 系统浏览器内核 (WebView2)</p>
-            <p className="text-yellow-400/70 mb-2">
-              OpenClaw 界面依赖此内核渲染，Windows 11 已内置，Windows 10 需额外安装（约 100MB），安装完成后重启安装器即可。
-            </p>
-            <button
-              onClick={() => invoke("open_url", { url: "https://go.microsoft.com/fwlink/p/?LinkId=2124703" })}
-              className="flex items-center gap-1.5 text-yellow-300 hover:text-yellow-200 underline underline-offset-2"
-            >
-              <ExternalLink size={11} />
-              点击下载 WebView2 运行时（微软官方）
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* 安装目录选择 */}
-      {installDir && (
-        <div className="bg-gray-900 rounded-lg border border-gray-700 overflow-hidden">
-          <div className="flex items-center gap-3 px-4 py-3">
-            <FolderOpen size={15} className="text-gray-500 flex-shrink-0" />
-            <div className="flex-1 min-w-0">
-              <div className="text-xs text-gray-500 mb-0.5">
-                Node.js 运行时和 OpenClaw 程序将安装到：
+        {/* 安装目录：始终显示，不被其他内容挤走 */}
+        {installDir && (
+          <div className="bg-gray-900 rounded-lg border border-gray-700 overflow-hidden">
+            <div className="flex items-center gap-2 px-3 py-2">
+              <FolderOpen size={14} className="text-gray-500 flex-shrink-0" />
+              <div className="flex-1 min-w-0">
+                <div className="text-[11px] text-gray-500">安装目录：</div>
+                <div className="font-mono text-brand-400 text-xs truncate">{installDir}</div>
               </div>
-              <div className="font-mono text-brand-400 text-sm break-all">{installDir}</div>
+              <button
+                onClick={handlePickFolder}
+                className="flex items-center gap-1 px-2 py-1 text-[11px] bg-gray-700 hover:bg-gray-600
+                  rounded border border-gray-600 text-gray-300 transition-colors whitespace-nowrap flex-shrink-0"
+              >
+                <FolderSearch size={12} />
+                更改
+              </button>
+            </div>
+          </div>
+        )}
+
+        {adminFailed && (
+          <div className="bg-red-900/30 border border-red-700/50 rounded-lg p-3 flex flex-col gap-2">
+            <div className="flex items-start gap-2">
+              <ShieldCheck size={16} className="text-red-400 mt-0.5 flex-shrink-0" />
+              <div>
+                <p className="text-sm font-medium text-red-300">需要管理员权限才能继续</p>
+                <p className="text-xs text-red-400/80 mt-0.5">
+                  安装需要写入系统目录、修改注册表路径、添加 Windows Defender 排除规则。
+                </p>
+              </div>
             </div>
             <button
-              onClick={handlePickFolder}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600
-                rounded border border-gray-600 text-gray-300 transition-colors whitespace-nowrap flex-shrink-0"
+              onClick={handleRelaunchAsAdmin}
+              disabled={relaunching}
+              className="flex items-center justify-center gap-2 py-1.5 bg-red-600 hover:bg-red-500
+                disabled:bg-gray-700 disabled:text-gray-500
+                text-white text-sm font-medium rounded-lg transition-colors"
             >
-              <FolderSearch size={13} />
-              更改目录
+              {relaunching
+                ? <><Loader size={13} className="animate-spin" /> 正在提权，当前窗口将自动关闭...</>
+                : <><ShieldCheck size={13} /> 自动重启并以管理员身份运行</>
+              }
             </button>
           </div>
-          <div className="border-t border-gray-800 px-4 py-2">
-            <div className="text-[11px] text-gray-600 space-y-0.5">
-              <p>✓ 安装时自动创建，当前目录不存在是正常的</p>
-              <p>✓ 路径须为纯英文且不含空格，否则 Node.js 无法正常工作</p>
-              <p>✓ OpenClaw 个人配置会另外保存在 <span className="text-gray-500 font-mono">%USERPROFILE%\.openclaw</span> 中</p>
-            </div>
-          </div>
-        </div>
-      )}
+        )}
 
-      <div className="bg-gray-900 rounded-lg border border-gray-700 divide-y divide-gray-800/80">
-        {checks.map((c) => (
-          <div key={c.key} className="flex items-start gap-3 px-4 py-3">
-            <div className="flex-shrink-0 mt-0.5">{statusIcon(c.status)}</div>
-            <div className="flex-1 min-w-0">
-              <div className="text-sm text-gray-200">{c.label}</div>
-              <div className={`text-xs mt-0.5
-                ${c.status === "ok"       ? "text-gray-500" : ""}
-                ${c.status === "warn"     ? "text-yellow-500" : ""}
-                ${c.status === "error"    ? "text-red-400" : ""}
-                ${c.status === "checking" ? "text-gray-600" : ""}
-              `}>{c.detail}</div>
-              {c.status !== "checking" && (
-                <div className="text-[10px] text-gray-600 mt-0.5">
-                  {CHECK_META[c.key]?.tip}
-                </div>
-              )}
+        {webview2Missing && (
+          <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-lg p-2.5 flex items-start gap-2">
+            <AlertCircle size={14} className="text-yellow-400 mt-0.5 flex-shrink-0" />
+            <div className="text-xs text-yellow-300/90">
+              <p className="font-medium">需要安装 Windows 系统浏览器内核 (WebView2)</p>
+              <button
+                onClick={() => invoke("open_url", { url: "https://go.microsoft.com/fwlink/p/?LinkId=2124703" })}
+                className="flex items-center gap-1 mt-1 text-yellow-300 hover:text-yellow-200 underline underline-offset-2"
+              >
+                <ExternalLink size={11} />
+                点击下载 WebView2 运行时（微软官方）
+              </button>
             </div>
           </div>
-        ))}
+        )}
       </div>
 
+      {/* 可滚动区域：检测列表 */}
+      <div className="flex-1 overflow-y-auto px-6 pb-2">
+        <div className="bg-gray-900 rounded-lg border border-gray-700 divide-y divide-gray-800/80">
+          {checks.map((c) => (
+            <div key={c.key} className="flex items-start gap-3 px-4 py-3">
+              <div className="flex-shrink-0 mt-0.5">{statusIcon(c.status)}</div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-gray-200">{c.label}</div>
+                <div className={`text-xs mt-0.5
+                  ${c.status === "ok"       ? "text-gray-500" : ""}
+                  ${c.status === "warn"     ? "text-yellow-500" : ""}
+                  ${c.status === "error"    ? "text-red-400" : ""}
+                  ${c.status === "checking" ? "text-gray-600" : ""}
+                `}>{c.detail}</div>
+                {c.status !== "checking" && (
+                  <div className="text-[10px] text-gray-600 mt-0.5">
+                    {CHECK_META[c.key]?.tip}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 底部固定区域：状态 + 操作按鈕 */}
       {done && (
-        <div className="flex items-center justify-between flex-shrink-0">
+        <div className="flex-shrink-0 flex items-center justify-between px-6 py-3 border-t border-gray-800">
           {adminFailed ? (
             <p className="text-xs text-red-400">请先以管理员身份重新运行安装器</p>
           ) : checks.some((c) => c.status === "warn") ? (
