@@ -12,14 +12,31 @@ function Log-Warn  { param($msg) Write-Output "[WARN] $msg" }
 function Log-Error { param($msg) Write-Output "[ERROR] $msg" }
 function Log-Dim   { param($msg) Write-Output "[DIM] $msg" }
 
+# #region agent log
+$_dbgLog = "d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
+function Dbg { param($loc,$msg,$data) try { $ts=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); $j=@{location=$loc;message=$msg;data=$data;timestamp=$ts;runId='ps-install';hypothesisId='PS'}|ConvertTo-Json -Compress; Add-Content -Path $_dbgLog -Value $j -Encoding utf8 } catch {} }
+Dbg "install.ps1:start" "script started" @{InstallDir=$InstallDir;NodeZipPath=$NodeZipPath;NodeZipExists=($NodeZipPath -and (Test-Path $NodeZipPath))}
+# #endregion
+
 # ── 阶段 1: 环境准备 ─────────────────────────────────────────────────────
 
 Log-Info "准备安装目录: $InstallDir"
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-New-Item -ItemType Directory -Force -Path "$InstallDir\runtime" | Out-Null
-New-Item -ItemType Directory -Force -Path "$InstallDir\npm-global" | Out-Null
-New-Item -ItemType Directory -Force -Path "$InstallDir\data" | Out-Null
-New-Item -ItemType Directory -Force -Path "$InstallDir\logs" | Out-Null
+try {
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    New-Item -ItemType Directory -Force -Path "$InstallDir\runtime" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$InstallDir\npm-global" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$InstallDir\data" | Out-Null
+    New-Item -ItemType Directory -Force -Path "$InstallDir\logs" | Out-Null
+    # #region agent log
+    Dbg "install.ps1:dirs" "directories created OK" @{dir=$InstallDir}
+    # #endregion
+} catch {
+    # #region agent log
+    Dbg "install.ps1:dirs-fail" "directory creation FAILED" @{error=$_.ToString()}
+    # #endregion
+    Log-Error "创建目录失败: $_"
+    exit 1
+}
 
 # ── 阶段 2: 解压 Node.js ─────────────────────────────────────────────────
 
@@ -30,6 +47,9 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
 } else {
     # 若 zip 不存在（portable exe 场景），则自动下载
     if (-not $NodeZipPath -or -not (Test-Path $NodeZipPath)) {
+        # #region agent log
+        Dbg "install.ps1:download-start" "zip not found, will download" @{NodeZipPath=$NodeZipPath}
+        # #endregion
         Log-Info "Node.js 运行时未内置，正在从镜像下载（约 25MB）..."
         $NodeZipPath = "$InstallDir\node-v22-win-x64.zip"
         $NodeUrl = "https://npmmirror.com/mirrors/node/v22.11.0/node-v22.11.0-win-x64.zip"
@@ -37,19 +57,34 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
             [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
             $wc = New-Object System.Net.WebClient
             $wc.DownloadFile($NodeUrl, $NodeZipPath)
+            # #region agent log
+            Dbg "install.ps1:download-ok" "primary mirror download OK" @{size=(Get-Item $NodeZipPath).Length}
+            # #endregion
             Log-OK "Node.js 下载完成: $NodeZipPath"
         } catch {
-            # 备用镜像 nodejs.org
+            # #region agent log
+            Dbg "install.ps1:download-primary-fail" "primary mirror FAILED" @{error=$_.ToString()}
+            # #endregion
             Log-Warn "主镜像下载失败，尝试 nodejs.org 备用源..."
             try {
                 $FallbackUrl = "https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip"
                 $wc.DownloadFile($FallbackUrl, $NodeZipPath)
+                # #region agent log
+                Dbg "install.ps1:download-fallback-ok" "fallback download OK" @{size=(Get-Item $NodeZipPath).Length}
+                # #endregion
                 Log-OK "Node.js 下载完成（备用源）: $NodeZipPath"
             } catch {
+                # #region agent log
+                Dbg "install.ps1:download-fail" "ALL downloads FAILED" @{error=$_.ToString()}
+                # #endregion
                 Log-Error "Node.js 下载失败，请检查网络后重试: $_"
                 exit 1
             }
         }
+    } else {
+        # #region agent log
+        Dbg "install.ps1:zip-exists" "zip found at path" @{NodeZipPath=$NodeZipPath;size=(Get-Item $NodeZipPath).Length}
+        # #endregion
     }
 
     Log-Info "解压 Node.js v22..."
@@ -57,13 +92,18 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
 
     try {
         Expand-Archive -Path $NodeZipPath -DestinationPath "$InstallDir\runtime" -Force
-        # 重命名顶层目录为 node
         $extracted = Get-ChildItem "$InstallDir\runtime" -Directory | Where-Object { $_.Name -like "node-*" } | Select-Object -First 1
         if ($extracted) {
             Rename-Item -Path $extracted.FullName -NewName "node" -Force
         }
+        # #region agent log
+        Dbg "install.ps1:extract-ok" "Node.js extracted OK" @{nodeExists=(Test-Path "$InstallDir\runtime\node\node.exe")}
+        # #endregion
         Log-OK "Node.js 解压完成"
     } catch {
+        # #region agent log
+        Dbg "install.ps1:extract-fail" "extract FAILED" @{error=$_.ToString()}
+        # #endregion
         Log-Error "解压失败: $_"
         exit 1
     }
@@ -107,9 +147,19 @@ $env:OPENCLAW_CONFIG_PATH = "$InstallDir\data\openclaw.json"
 
 # 配置 npm 镜像（国内加速）
 Log-Info "配置 npm 镜像（npmmirror）..."
-& "$RUNTIME_DIR\npm.cmd" config set registry https://registry.npmmirror.com --prefix "$InstallDir\npm-global" 2>&1 | ForEach-Object { Log-Dim $_ }
-& "$RUNTIME_DIR\npm.cmd" config set strict-ssl false --prefix "$InstallDir\npm-global" 2>&1 | Out-Null
-Log-OK "npm 镜像配置完成"
+try {
+    & "$RUNTIME_DIR\npm.cmd" config set registry https://registry.npmmirror.com --prefix "$InstallDir\npm-global" 2>&1 | ForEach-Object { Log-Dim $_ }
+    & "$RUNTIME_DIR\npm.cmd" config set strict-ssl false --prefix "$InstallDir\npm-global" 2>&1 | Out-Null
+    # #region agent log
+    Dbg "install.ps1:npm-config-ok" "npm config done" @{}
+    # #endregion
+    Log-OK "npm 镜像配置完成"
+} catch {
+    # #region agent log
+    Dbg "install.ps1:npm-config-fail" "npm config FAILED" @{error=$_.ToString()}
+    # #endregion
+    Log-Warn "npm 配置失败（可忽略）: $_"
+}
 
 # ── 阶段 4: 安装 OpenClaw CLI ────────────────────────────────────────────
 
@@ -140,8 +190,13 @@ try {
         }
     }
 
+    # #region agent log
+    $npmExit = $proc.ExitCode
+    $errContent = if (Test-Path "$InstallDir\logs\npm-install-err.log") { Get-Content "$InstallDir\logs\npm-install-err.log" -Raw } else { "" }
+    $outContent = if (Test-Path "$InstallDir\logs\npm-install.log") { Get-Content "$InstallDir\logs\npm-install.log" -Raw } else { "" }
+    Dbg "install.ps1:npm-install-done" "npm install finished" @{exitCode=$npmExit;stderr=$errContent.Substring(0,[Math]::Min(500,$errContent.Length));stdout=$outContent.Substring(0,[Math]::Min(500,$outContent.Length))}
+    # #endregion
     if ($proc.ExitCode -ne 0) {
-        # 显示错误日志
         if (Test-Path "$InstallDir\logs\npm-install-err.log") {
             Get-Content "$InstallDir\logs\npm-install-err.log" | ForEach-Object { Log-Error $_ }
         }
@@ -149,6 +204,9 @@ try {
         exit 1
     }
 } catch {
+    # #region agent log
+    Dbg "install.ps1:npm-exec-fail" "npm execution FAILED" @{error=$_.ToString()}
+    # #endregion
     Log-Error "npm 执行失败: $_"
     exit 1
 }
@@ -176,5 +234,8 @@ $installInfo = @{
 } | ConvertTo-Json
 $installInfo | Out-File "$InstallDir\install-info.json" -Encoding utf8
 
+# #region agent log
+Dbg "install.ps1:complete" "install script completed successfully" @{}
+# #endregion
 Log-OK "OpenClaw CLI 安装完成！"
 Write-Output "[RESULT]install_ok"
