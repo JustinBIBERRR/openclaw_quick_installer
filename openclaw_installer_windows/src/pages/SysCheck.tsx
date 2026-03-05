@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
 import {
   CheckCircle, XCircle, AlertCircle, Loader,
-  FolderOpen, ShieldCheck, ExternalLink, FolderSearch,
+  ShieldCheck, ExternalLink,
 } from "lucide-react";
 import type { SysCheckItem } from "../types";
 
@@ -14,29 +13,25 @@ interface Props {
 }
 
 const CHECK_META: Record<string, { label: string; tip: string }> = {
-  admin:    {
+  admin: {
     label: "管理员权限",
-    tip:   "安装器需要管理员权限以修改系统路径、绕过 Windows Defender 扫描等，确保安装顺利完成。",
+    tip: "安装器需要管理员权限以安装 Node.js 和 OpenClaw CLI。",
   },
   webview2: {
     label: "Windows 系统浏览器内核",
-    tip:   "OpenClaw 界面依赖 Edge/WebView2 内核渲染。Windows 11 已内置，Windows 10 可能需要额外安装（约 100MB）。",
+    tip: "OpenClaw 界面依赖 Edge/WebView2 渲染。Windows 11 已内置，Windows 10 可能需要额外安装。",
   },
-  disk:     {
+  disk: {
     label: "磁盘空间（需 2GB）",
-    tip:   "Node.js 运行时 + OpenClaw 程序文件约需 500MB，建议至少预留 2GB 以保证安装和运行。",
+    tip: "Node.js + OpenClaw 约需 500MB，建议至少预留 2GB。",
   },
-  port:     {
+  port: {
     label: "端口 18789 可用",
-    tip:   "OpenClaw Gateway 默认监听此端口。若被占用，安装器会自动切换到下一个可用端口。",
+    tip: "OpenClaw Gateway 默认监听此端口。若被占用会自动切换。",
   },
-  path:     {
-    label: "路径合法性",
-    tip:   "安装路径须为纯英文字母和数字，不含空格和中文，否则 Node.js 将无法正常工作。",
-  },
-  network:  {
+  network: {
     label: "网络连通性",
-    tip:   "安装时需要访问 npmmirror.com 下载 OpenClaw，国内直连速度较快，无需翻墙。",
+    tip: "安装时需要访问 npmmirror.com 下载 OpenClaw，国内直连速度较快。",
   },
 };
 
@@ -58,9 +53,6 @@ export default function SysCheck({ onDone }: Props) {
 
   useEffect(() => {
     async function init() {
-      // #region agent log
-      fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:init',message:'init called',data:{isTauri,hasInternals:'__TAURI_INTERNALS__' in window,hasLegacy:'__TAURI__' in window},timestamp:Date.now(),runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       if (!isTauri) {
         const fallback = "C:\\OpenClaw";
         setInstallDir(fallback);
@@ -69,15 +61,9 @@ export default function SysCheck({ onDone }: Props) {
       }
       try {
         const dir = await invoke<string>("get_default_install_dir");
-        // #region agent log
-        fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:invoke-ok',message:'get_default_install_dir OK',data:{dir},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         setInstallDir(dir);
         runChecks(dir);
-      } catch(err) {
-        // #region agent log
-        fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:invoke-err',message:'get_default_install_dir FAILED',data:{err:String(err)},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
-        // #endregion
+      } catch {
         const fallback = "C:\\OpenClaw";
         setInstallDir(fallback);
         runChecks(fallback);
@@ -86,19 +72,6 @@ export default function SysCheck({ onDone }: Props) {
     init();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-
-  async function handlePickFolder() {
-    if (!isTauri) return;
-    try {
-      const selected = await open({ directory: true, multiple: false, title: "选择安装目录" });
-      if (selected && typeof selected === "string") {
-        setInstallDir(selected);
-        runChecks(selected);
-      }
-    } catch {
-      // user cancelled
-    }
-  }
 
   async function runChecks(dir: string) {
     setDone(false);
@@ -141,15 +114,6 @@ export default function SysCheck({ onDone }: Props) {
           ? "端口 18789 空闲"
           : `18789 已被占用，将使用端口 ${r.port}`,
       });
-
-      if (!r.path_valid && r.suggested_dir) {
-        setInstallDir(r.suggested_dir);
-      }
-      updateCheck("path", {
-        status: r.path_valid ? "ok" : "warn",
-        detail: r.path_valid ? `路径合法: ${dir}` : r.path_issue,
-      });
-
       updateCheck("network", {
         status: r.network_ok ? "ok" : "warn",
         detail: r.network_ok
@@ -172,7 +136,6 @@ export default function SysCheck({ onDone }: Props) {
     setRelaunching(true);
     try {
       await invoke("relaunch_as_admin");
-      // 新窗口已以管理员身份启动，自动关闭当前无权限窗口
       if (isTauri) {
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
         await getCurrentWindow().close();
@@ -193,33 +156,15 @@ export default function SysCheck({ onDone }: Props) {
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
-      {/* 顶部固定区域：标题 + 安装目录 + 警告块 */}
       <div className="flex-shrink-0 px-6 pt-4 pb-2 flex flex-col gap-2">
         <div>
           <h2 className="text-lg font-semibold text-gray-100">系统预检</h2>
           <p className="text-sm text-gray-400 mt-0.5">正在检测安装环境，全部通过后即可开始安装</p>
         </div>
 
-        {/* 安装目录：始终显示，不被其他内容挤走 */}
-        {installDir && (
-          <div className="bg-gray-900 rounded-lg border border-gray-700 overflow-hidden">
-            <div className="flex items-center gap-2 px-3 py-2">
-              <FolderOpen size={14} className="text-gray-500 flex-shrink-0" />
-              <div className="flex-1 min-w-0">
-                <div className="text-[11px] text-gray-500">安装目录：</div>
-                <div className="font-mono text-brand-400 text-xs truncate">{installDir}</div>
-              </div>
-              <button
-                onClick={handlePickFolder}
-                className="flex items-center gap-1 px-2 py-1 text-[11px] bg-gray-700 hover:bg-gray-600
-                  rounded border border-gray-600 text-gray-300 transition-colors whitespace-nowrap flex-shrink-0"
-              >
-                <FolderSearch size={12} />
-                更改
-              </button>
-            </div>
-          </div>
-        )}
+        <div className="text-xs text-gray-600 flex flex-col gap-0.5">
+          <span>OpenClaw 程序将通过 npm 全局安装，配置保存在 <code className="text-gray-500">%USERPROFILE%\.openclaw\</code></span>
+        </div>
 
         {adminFailed && (
           <div className="bg-red-900/30 border border-red-700/50 rounded-lg p-3 flex flex-col gap-2">
@@ -228,7 +173,7 @@ export default function SysCheck({ onDone }: Props) {
               <div>
                 <p className="text-sm font-medium text-red-300">需要管理员权限才能继续</p>
                 <p className="text-xs text-red-400/80 mt-0.5">
-                  安装需要写入系统目录、修改注册表路径、添加 Windows Defender 排除规则。
+                  安装需要写入系统目录、修改 PATH 等操作。
                 </p>
               </div>
             </div>
@@ -264,7 +209,6 @@ export default function SysCheck({ onDone }: Props) {
         )}
       </div>
 
-      {/* 可滚动区域：检测列表 */}
       <div className="flex-1 overflow-y-auto px-6 pb-2">
         <div className="bg-gray-900 rounded-lg border border-gray-700 divide-y divide-gray-800/80">
           {checks.map((c) => (
@@ -289,7 +233,6 @@ export default function SysCheck({ onDone }: Props) {
         </div>
       </div>
 
-      {/* 底部固定区域：状态 + 操作按鈕 */}
       {done && (
         <div className="flex-shrink-0 flex items-center justify-between px-6 py-3 border-t border-gray-800">
           {adminFailed ? (
