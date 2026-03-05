@@ -1,6 +1,6 @@
 /**
- * gen-i18n.js
- * Run: node gen-i18n.js
+ * gen-i18n.cjs
+ * Run: node gen-i18n.cjs
  *
  * Generates TSX files with proper UTF-8 Chinese text.
  * This script is all-ASCII (Chinese via \uXXXX), so it saves correctly
@@ -16,9 +16,10 @@ const SRC = path.resolve(__dirname, "src");
 // ---------------------------------------------------------------------------
 const syscheck = `import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   CheckCircle, XCircle, AlertCircle, Loader,
-  FolderOpen, ShieldCheck, ExternalLink, ChevronDown, ChevronRight,
+  FolderOpen, ShieldCheck, ExternalLink, FolderSearch,
 } from "lucide-react";
 import type { SysCheckItem } from "../types";
 
@@ -27,9 +28,6 @@ const isTauri = typeof window !== "undefined" && "__TAURI__" in window;
 interface Props {
   onDone: (installDir: string) => void;
 }
-
-// Browser preview fallback; real env uses %LOCALAPPDATA%\\\\OpenClaw from Rust
-const PREVIEW_DEFAULT_DIR = "C:\\\\Users\\\\YourName\\\\AppData\\\\Local\\\\OpenClaw";
 
 const CHECK_META: Record<string, { label: string; tip: string }> = {
   admin:    {
@@ -65,12 +63,10 @@ export default function SysCheck({ onDone }: Props) {
     }))
   );
   const [installDir, setInstallDir] = useState("");
-  const [defaultDir, setDefaultDir] = useState(PREVIEW_DEFAULT_DIR);
   const [done, setDone] = useState(false);
   const [adminFailed, setAdminFailed] = useState(false);
   const [webview2Missing, setWebview2Missing] = useState(false);
   const [relaunching, setRelaunching] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
 
   const updateCheck = (key: string, update: Partial<SysCheckItem>) => {
     setChecks((prev) => prev.map((c) => (c.key === key ? { ...c, ...update } : c)));
@@ -78,26 +74,47 @@ export default function SysCheck({ onDone }: Props) {
 
   useEffect(() => {
     async function init() {
+      // #region agent log
+      fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:init',message:'init called',data:{isTauri,hasTauriGlobal:'__TAURI__' in window},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+      // #endregion
       if (!isTauri) {
-        setInstallDir(PREVIEW_DEFAULT_DIR);
-        setDefaultDir(PREVIEW_DEFAULT_DIR);
-        runChecks(PREVIEW_DEFAULT_DIR);
+        const fallback = "C:\\\\OpenClaw";
+        setInstallDir(fallback);
+        runChecks(fallback);
         return;
       }
       try {
         const dir = await invoke<string>("get_default_install_dir");
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:invoke-ok',message:'get_default_install_dir OK',data:{dir},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         setInstallDir(dir);
-        setDefaultDir(dir);
         runChecks(dir);
-      } catch {
-        setInstallDir(PREVIEW_DEFAULT_DIR);
-        setDefaultDir(PREVIEW_DEFAULT_DIR);
-        runChecks(PREVIEW_DEFAULT_DIR);
+      } catch(err) {
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:invoke-err',message:'get_default_install_dir FAILED',data:{err:String(err)},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
+        // #endregion
+        const fallback = "C:\\\\OpenClaw";
+        setInstallDir(fallback);
+        runChecks(fallback);
       }
     }
     init();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  async function handlePickFolder() {
+    if (!isTauri) return;
+    try {
+      const selected = await open({ directory: true, multiple: false, title: "\u9009\u62e9\u5b89\u88c5\u76ee\u5f55" });
+      if (selected && typeof selected === "string") {
+        setInstallDir(selected);
+        runChecks(selected);
+      }
+    } catch {
+      // user cancelled
+    }
+  }
 
   async function runChecks(dir: string) {
     setDone(false);
@@ -244,65 +261,33 @@ export default function SysCheck({ onDone }: Props) {
         </div>
       )}
 
+      {/* \u5b89\u88c5\u76ee\u5f55\u9009\u62e9 */}
       {installDir && (
         <div className="bg-gray-900 rounded-lg border border-gray-700 overflow-hidden">
-          <div className="flex items-start gap-3 px-4 py-3">
-            <FolderOpen size={15} className="text-gray-500 flex-shrink-0 mt-0.5" />
+          <div className="flex items-center gap-3 px-4 py-3">
+            <FolderOpen size={15} className="text-gray-500 flex-shrink-0" />
             <div className="flex-1 min-w-0">
-              <div className="text-sm text-gray-300 mb-0.5">
+              <div className="text-xs text-gray-500 mb-0.5">
                 Node.js \u8fd0\u884c\u65f6\u548c OpenClaw \u7a0b\u5e8f\u5c06\u5b89\u88c5\u5230\uff1a
               </div>
               <div className="font-mono text-brand-400 text-sm break-all">{installDir}</div>
-              <div className="text-[11px] text-gray-600 mt-1.5 space-y-0.5">
-                <p>\u2713 \u5b89\u88c5\u65f6\u81ea\u52a8\u521b\u5efa\uff0c\u5f53\u524d\u76ee\u5f55\u4e0d\u5b58\u5728\u662f\u6b63\u5e38\u7684</p>
-                <p>\u2713 \u4e0e\u5b89\u88c5\u5668 exe \u672c\u8eab\u7684\u4f4d\u7f6e\u65e0\u5173</p>
-                <p>\u2713 OpenClaw \u7684\u4e2a\u4eba\u914d\u7f6e\u4f1a\u53e6\u5916\u4fdd\u5b58\u5728 <span className="text-gray-500 font-mono">%USERPROFILE%\\.openclaw</span> \u4e2d</p>
-              </div>
             </div>
             <button
-              onClick={() => setShowAdvanced((v) => !v)}
-              className="flex items-center gap-1 text-[11px] text-gray-600 hover:text-gray-400
-                whitespace-nowrap transition-colors flex-shrink-0 mt-0.5"
+              onClick={handlePickFolder}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600
+                rounded border border-gray-600 text-gray-300 transition-colors whitespace-nowrap flex-shrink-0"
             >
-              {showAdvanced ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-              \u4fee\u6539
+              <FolderSearch size={13} />
+              \u66f4\u6539\u76ee\u5f55
             </button>
           </div>
-
-          {showAdvanced && (
-            <div className="border-t border-gray-800 px-4 py-3 bg-gray-800/40">
-              <p className="text-[11px] text-yellow-500/80 mb-2">
-                \u26a0 \u8def\u5f84\u987b\u4e3a\u7eaf\u82f1\u6587\u5b57\u6bcd\u548c\u6570\u5b57\uff0c\u4e0d\u542b\u7a7a\u683c\u3001\u4e2d\u6587\u6216\u7279\u6b8a\u5b57\u7b26\uff0c\u5426\u5219 Node.js \u5c06\u65e0\u6cd5\u6b63\u5e38\u5de5\u4f5c
-              </p>
-              <div className="flex gap-2">
-                <input
-                  type="text"
-                  value={installDir}
-                  onChange={(e) => setInstallDir(e.target.value)}
-                  className="flex-1 bg-gray-800 border border-gray-600 rounded px-3 py-1.5
-                    text-sm text-gray-200 font-mono outline-none
-                    focus:border-brand-400 transition-colors"
-                  style={{ userSelect: "text" }}
-                />
-                {installDir !== defaultDir && (
-                  <button
-                    onClick={() => { setInstallDir(defaultDir); runChecks(defaultDir); }}
-                    className="px-3 text-xs bg-gray-700 hover:bg-gray-600 rounded border border-gray-600
-                      text-gray-400 transition-colors whitespace-nowrap"
-                  >
-                    \u6062\u590d\u9ed8\u8ba4
-                  </button>
-                )}
-                <button
-                  onClick={() => runChecks(installDir)}
-                  className="px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 rounded border border-gray-600
-                    text-gray-300 transition-colors whitespace-nowrap"
-                >
-                  \u9a8c\u8bc1\u8def\u5f84
-                </button>
-              </div>
+          <div className="border-t border-gray-800 px-4 py-2">
+            <div className="text-[11px] text-gray-600 space-y-0.5">
+              <p>\u2713 \u5b89\u88c5\u65f6\u81ea\u52a8\u521b\u5efa\uff0c\u5f53\u524d\u76ee\u5f55\u4e0d\u5b58\u5728\u662f\u6b63\u5e38\u7684</p>
+              <p>\u2713 \u8def\u5f84\u987b\u4e3a\u7eaf\u82f1\u6587\u4e14\u4e0d\u542b\u7a7a\u683c\uff0c\u5426\u5219 Node.js \u65e0\u6cd5\u6b63\u5e38\u5de5\u4f5c</p>
+              <p>\u2713 OpenClaw \u4e2a\u4eba\u914d\u7f6e\u4f1a\u53e6\u5916\u4fdd\u5b58\u5728 <span className="text-gray-500 font-mono">%USERPROFILE%\\.openclaw</span> \u4e2d</p>
             </div>
-          )}
+          </div>
         </div>
       )}
 
