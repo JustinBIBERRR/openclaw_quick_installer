@@ -175,43 +175,60 @@ if (-not $nodeOk -or -not $nodeVersion) {
 
 # ── 阶段 2: 安装 OpenClaw CLI（系统全局）────────────────────────────────────
 
-Write-Output "[PROGRESS:2/4] 安装 OpenClaw CLI"
-Log-Info "正在安装 openclaw（约 1-3 分钟）..."
-Log-Dim "来源: registry.npmmirror.com"
+Write-Output "[PROGRESS:2/4] 检测 / 安装 OpenClaw CLI"
 
-$npmLogErr = "$InstallDir\logs\npm-install-err.log"
-$npmExitCode = 0
+# 先检测 openclaw 是否已经安装且可用（避免重复安装浪费 10-20 分钟）
+Refresh-Path
+$ocAlreadyInstalled = $false
 try {
-    # 使用调用运算符实时流式输出，stderr 单独重定向避免混入
-    $npmOutput = & npm install -g openclaw `
-        --registry https://registry.npmmirror.com `
-        --no-audit --no-fund 2>$npmLogErr | ForEach-Object {
-            if ($_ -match "added \d+ package|changed \d+") { Log-OK $_; $_ }
-            elseif ($_ -match "warn|WARN") { Log-Warn $_; $_ }
-            elseif ($_.Trim() -ne "") { Log-Dim $_; $_ }
-        }
-    $npmExitCode = $LASTEXITCODE
-
-    # 输出 stderr（过滤纯信息行，只显示警告/错误）
-    if (Test-Path $npmLogErr) {
-        Get-Content $npmLogErr | ForEach-Object {
-            if ($_ -match "ERR!|error") { Log-Error $_ }
-            elseif ($_ -match "WARN|warn") { Log-Warn $_ }
-            elseif ($_.Trim() -ne "" -and $_ -notmatch "^npm notice") { Log-Dim $_ }
+    $ocExisting = Get-Command "openclaw" -ErrorAction SilentlyContinue
+    if (-not $ocExisting) { $ocExisting = Get-Command "openclaw.cmd" -ErrorAction SilentlyContinue }
+    if ($ocExisting) {
+        $ocVerCheck = & $ocExisting.Source --version 2>&1
+        if ($LASTEXITCODE -eq 0 -and $ocVerCheck) {
+            $ocAlreadyInstalled = $true
+            Log-OK "OpenClaw 已安装: $($ocVerCheck -join ' ')，跳过 npm install"
+            Dbg "install.ps1:oc-exists" "openclaw already installed, skip npm" @{version=($ocVerCheck -join ' ')}
         }
     }
+} catch {}
 
-    $errContent = if (Test-Path $npmLogErr) { [string](Get-Content $npmLogErr -Raw) } else { "" }
-    Dbg "install.ps1:npm-install-done" "npm install finished" @{exitCode=$npmExitCode;stderrLen=$errContent.Length}
+if (-not $ocAlreadyInstalled) {
+    Log-Info "正在安装 openclaw（约 1-3 分钟）..."
+    Log-Dim "来源: registry.npmmirror.com"
 
-    if ($npmExitCode -ne 0) {
-        Log-Error "npm install 失败（退出码 $npmExitCode）"
+    $npmLogErr = "$InstallDir\logs\npm-install-err.log"
+    $npmExitCode = 0
+    try {
+        $npmOutput = & npm install -g openclaw `
+            --registry https://registry.npmmirror.com `
+            --no-audit --no-fund 2>$npmLogErr | ForEach-Object {
+                if ($_ -match "added \d+ package|changed \d+") { Log-OK $_; $_ }
+                elseif ($_ -match "warn|WARN") { Log-Warn $_; $_ }
+                elseif ($_.Trim() -ne "") { Log-Dim $_; $_ }
+            }
+        $npmExitCode = $LASTEXITCODE
+
+        if (Test-Path $npmLogErr) {
+            Get-Content $npmLogErr | ForEach-Object {
+                if ($_ -match "ERR!|error") { Log-Error $_ }
+                elseif ($_ -match "WARN|warn") { Log-Warn $_ }
+                elseif ($_.Trim() -ne "" -and $_ -notmatch "^npm notice") { Log-Dim $_ }
+            }
+        }
+
+        $errContent = if (Test-Path $npmLogErr) { [string](Get-Content $npmLogErr -Raw) } else { "" }
+        Dbg "install.ps1:npm-install-done" "npm install finished" @{exitCode=$npmExitCode;stderrLen=$errContent.Length}
+
+        if ($npmExitCode -ne 0) {
+            Log-Error "npm install 失败（退出码 $npmExitCode）"
+            exit 1
+        }
+    } catch {
+        Dbg "install.ps1:npm-exec-fail" "npm execution FAILED" @{error=$_.ToString()}
+        Log-Error "npm 执行失败: $_"
         exit 1
     }
-} catch {
-    Dbg "install.ps1:npm-exec-fail" "npm execution FAILED" @{error=$_.ToString()}
-    Log-Error "npm 执行失败: $_"
-    exit 1
 }
 
 # ── 阶段 3: 验证安装 ───────────────────────────────────────────────────────
