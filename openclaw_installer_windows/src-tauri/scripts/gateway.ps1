@@ -30,22 +30,28 @@ function Test-GatewayHealth {
 }
 
 function Find-OpenClaw {
-    $exe = (Get-Command "openclaw" -ErrorAction SilentlyContinue).Source
-    if ($exe -and (Test-Path $exe)) { return $exe }
+    # 优先找 .cmd 文件（Start-Process 能直接执行）
+    $cmd = (Get-Command "openclaw.cmd" -ErrorAction SilentlyContinue).Source
+    if ($cmd -and (Test-Path $cmd)) { return $cmd }
 
-    $exe = (Get-Command "openclaw.cmd" -ErrorAction SilentlyContinue).Source
-    if ($exe -and (Test-Path $exe)) { return $exe }
+    # 如果 Get-Command 返回 .ps1，推导同目录下的 .cmd
+    $any = (Get-Command "openclaw" -ErrorAction SilentlyContinue).Source
+    if ($any) {
+        $dir = Split-Path $any -Parent
+        $cmdInDir = Join-Path $dir "openclaw.cmd"
+        if (Test-Path $cmdInDir) { return $cmdInDir }
+    }
 
+    # npm prefix 查找
     try {
         $npmPrefix = (& npm config get prefix 2>&1).Trim()
         if ($npmPrefix) {
             $candidate = "$npmPrefix\openclaw.cmd"
             if (Test-Path $candidate) { return $candidate }
-            $candidate = "$npmPrefix\openclaw"
-            if (Test-Path $candidate) { return $candidate }
         }
     } catch {}
 
+    # %APPDATA%\npm 兜底
     $appDataNpm = "$env:APPDATA\npm\openclaw.cmd"
     if (Test-Path $appDataNpm) { return $appDataNpm }
 
