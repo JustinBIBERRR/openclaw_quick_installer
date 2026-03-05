@@ -17,10 +17,10 @@ interface Props {
 type InstallPhase = "idle" | "running" | "done" | "failed" | "manual_download";
 
 const INSTALL_STEPS = [
-  "检测 / 下载 Node.js",
-  "优化系统环境",
+  "检测 / 安装 Node.js",
   "安装 OpenClaw CLI",
   "验证安装",
+  "完成",
 ];
 
 export default function Installing({ manifest, logs, addLog, onDone }: Props) {
@@ -64,10 +64,10 @@ export default function Installing({ manifest, logs, addLog, onDone }: Props) {
     if (!isTauri) {
       // 浏览器预览模式：模拟安装步骤
       const steps = [
-        { step: 0, delay: 600,  logs: ["[预览] 解压 node-v22-win-x64.zip → C:\\OpenClaw\\runtime", "[预览] Node.js v22.11.0 OK"] },
-        { step: 1, delay: 800,  logs: ["[预览] 注册表 LongPathsEnabled=1", "[预览] npm registry → https://registry.npmmirror.com", "[预览] Windows Defender 排除路径已添加"] },
-        { step: 2, delay: 1200, logs: ["[预览] npm install -g openclaw", "[预览] added 312 packages in 18s", "[预览] openclaw@1.0.3 安装成功"] },
-        { step: 3, delay: 400,  logs: ["[预览] 写入 manifest.json", "[预览] 安装完成 ✓"] },
+        { step: 0, delay: 400,  logs: ["[预览] 准备安装目录", "[预览] 检测到系统 Node.js v22，跳过安装"] },
+        { step: 1, delay: 600,  logs: ["[预览] npm install -g openclaw", "[预览] added 312 packages in 18s"] },
+        { step: 2, delay: 400,  logs: ["[预览] 验证 openclaw --version"] },
+        { step: 3, delay: 300,  logs: ["[预览] 写入 install-info.json", "[预览] 安装完成 ✓"] },
       ];
       for (const s of steps) {
         await new Promise((r) => setTimeout(r, s.delay));
@@ -100,7 +100,7 @@ export default function Installing({ manifest, logs, addLog, onDone }: Props) {
       <div>
         <h2 className="text-lg font-semibold text-gray-100">安装 OpenClaw</h2>
         <p className="text-sm text-gray-400 mt-0.5">
-          解压内置运行时，安装 OpenClaw CLI（约 1-3 分钟）
+          检测/安装 Node.js 并全局安装 OpenClaw CLI（约 1-3 分钟）
         </p>
       </div>
 

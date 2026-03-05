@@ -1,10 +1,9 @@
-# OpenClaw 安装脚本
+# OpenClaw 安装脚本（简化版：winget/msi 安装 Node，npm 全局装 openclaw）
 # 参数通过环境变量传入（由 Tauri 注入）
-$InstallDir  = if ($env:OPENCLAW_INSTALL_DIR) { $env:OPENCLAW_INSTALL_DIR } else { "C:\OpenClaw" }
-$NodeZipPath = if ($env:NODE_ZIP_PATH)        { $env:NODE_ZIP_PATH }        else { "" }
+$InstallDir = if ($env:OPENCLAW_INSTALL_DIR) { $env:OPENCLAW_INSTALL_DIR } else { "C:\OpenClaw" }
 
-Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
+# 不使用 Set-StrictMode，避免 $null 属性访问崩溃
+$ErrorActionPreference = "Continue"
 
 function Log-Info  { param($msg) Write-Output "[INFO] $msg" }
 function Log-OK    { param($msg) Write-Output "[OK] $msg" }
@@ -15,357 +14,234 @@ function Log-Dim   { param($msg) Write-Output "[DIM] $msg" }
 # #region agent log
 $_dbgLog = "d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
 function Dbg { param($loc,$msg,$data) try { $ts=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); $j=@{location=$loc;message=$msg;data=$data;timestamp=$ts;runId='ps-install';hypothesisId='PS'}|ConvertTo-Json -Compress; Add-Content -Path $_dbgLog -Value $j -Encoding utf8 } catch {} }
-Dbg "install.ps1:start" "script started" @{InstallDir=$InstallDir;NodeZipPath=$NodeZipPath;NodeZipExists=($NodeZipPath -and (Test-Path $NodeZipPath))}
+Dbg "install.ps1:start" "script started" @{InstallDir=$InstallDir}
 # #endregion
 
-# ── 阶段 1: 环境准备 ─────────────────────────────────────────────────────
+# ── 阶段 0: 准备安装目录 ───────────────────────────────────────────────────
 
 Write-Output "[PROGRESS:0/4] 准备安装目录"
 Log-Info "准备安装目录: $InstallDir"
 try {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    New-Item -ItemType Directory -Force -Path "$InstallDir\runtime" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$InstallDir\npm-global" | Out-Null
     New-Item -ItemType Directory -Force -Path "$InstallDir\data" | Out-Null
     New-Item -ItemType Directory -Force -Path "$InstallDir\logs" | Out-Null
     Log-OK "安装目录已就绪: $InstallDir"
-    # #region agent log
     Dbg "install.ps1:dirs" "directories created OK" @{dir=$InstallDir}
-    # #endregion
 } catch {
-    # #region agent log
     Dbg "install.ps1:dirs-fail" "directory creation FAILED" @{error=$_.ToString()}
-    # #endregion
     Log-Error "创建目录失败: $_"
     exit 1
 }
 
-# ── 阶段 2: Node.js 运行时 ────────────────────────────────────────────────
+# 配置 OpenClaw 数据目录（供后续 openclaw 命令读取）
+$env:OPENCLAW_CONFIG_PATH = "$InstallDir\data\openclaw.json"
+$env:OPENCLAW_HOME = "$InstallDir\data"
+
+# ── 阶段 1: 检测 / 安装 Node.js ─────────────────────────────────────────────
 
 Write-Output "[PROGRESS:1/4] 检测 Node.js 运行时"
-Log-Info "正在检测 Node.js 运行时..."
+Log-Info "正在检测 Node.js..."
 
-$RUNTIME_DIR = "$InstallDir\runtime\node"
-$useSystemNode = $false
-
-# 检查内置运行时是否已解压
-if (Test-Path "$RUNTIME_DIR\node.exe") {
-    $existVer = & "$RUNTIME_DIR\node.exe" --version 2>&1
-    Log-OK "已有内置 Node.js: $existVer，跳过下载"
-} else {
-    # 优先检测系统已安装的 Node.js（v18+ 即可）
-    Log-Info "检测系统 Node.js..."
-    try {
-        $sysNode = Get-Command node.exe -ErrorAction SilentlyContinue
-        if ($sysNode) {
-            $sysVer = & $sysNode.Source --version 2>&1
-            # #region agent log
-            Dbg "install.ps1:sys-node" "system node detected" @{path=$sysNode.Source;version="$sysVer"}
-            # #endregion
-            if ($sysVer -match "v(\d+)\.") {
-                $major = [int]$Matches[1]
-                if ($major -ge 18) {
-                    Log-OK "检测到系统 Node.js $sysVer ✓ 路径: $($sysNode.Source)"
-                    Log-Info "版本满足要求（>= v18），跳过下载和解压"
-                    $RUNTIME_DIR = Split-Path $sysNode.Source
-                    $useSystemNode = $true
-                } else {
-                    Log-Warn "系统 Node.js 版本 $sysVer 过低（需 >= v18），将下载内置版本"
-                }
-            }
-        } else {
-            Log-Info "未检测到系统 Node.js，将下载内置版本"
-        }
-    } catch {
-        # #region agent log
-        Dbg "install.ps1:sys-node-err" "system node check failed" @{error=$_.ToString()}
-        # #endregion
-        Log-Info "Node.js 检测出错，将下载内置版本"
-    }
+function Refresh-Path {
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                [System.Environment]::GetEnvironmentVariable("PATH", "User")
 }
 
-if (-not (Test-Path "$RUNTIME_DIR\node.exe") -and -not $useSystemNode) {
-    # 若 zip 不存在（portable exe 场景），则自动下载
-    if (-not $NodeZipPath -or -not (Test-Path $NodeZipPath)) {
-        # #region agent log
-        Dbg "install.ps1:download-start" "zip not found, will download" @{NodeZipPath=$NodeZipPath}
-        # #endregion
-        Write-Output "[PROGRESS:1/4] 下载 Node.js 运行时"
-        Log-Info "Node.js 运行时未内置，正在从镜像下载（约 33MB，视网速可能需要 5-20 分钟）..."
-        $NodeZipPath = "$InstallDir\node-v22-win-x64.zip"
+$nodeOk = $false
+$nodeVersion = ""
 
-        # 多源降级：npmmirror CDN → npmmirror 镜像 → GitHub Release 自有 CDN → nodejs.org
+try {
+    $sysNode = Get-Command node.exe -ErrorAction SilentlyContinue
+    if ($sysNode) {
+        $verOut = & $sysNode.Source --version 2>&1
+        if ($verOut -match "v(\d+)\.") {
+            $major = [int]$Matches[1]
+            if ($major -ge 18) {
+                $nodeVersion = $verOut.Trim()
+                Log-OK "检测到系统 Node.js $nodeVersion，跳过安装"
+                $nodeOk = $true
+                Dbg "install.ps1:sys-node" "system node OK" @{version=$nodeVersion}
+            } else {
+                Log-Warn "系统 Node.js 版本 $verOut 过低（需 >= v18），将安装 LTS"
+            }
+        }
+    } else {
+        Log-Info "未检测到 Node.js，将自动安装"
+    }
+} catch {
+    Dbg "install.ps1:sys-node-err" "system node check failed" @{error=$_.ToString()}
+    Log-Info "Node.js 检测出错，将自动安装"
+}
+
+if (-not $nodeOk) {
+    # 尝试 winget 静默安装
+    $wingetInstalled = $false
+    try {
+        $wingetExe = Get-Command winget -ErrorAction SilentlyContinue
+        if ($wingetExe) {
+            Log-Info "使用 winget 安装 Node.js LTS..."
+            Write-Output "[PROGRESS:1/4] 使用 winget 安装 Node.js"
+            $wingetProc = Start-Process -FilePath "winget" -ArgumentList @(
+                "install", "OpenJS.NodeJS.LTS",
+                "--silent", "--accept-package-agreements", "--accept-source-agreements"
+            ) -Wait -PassThru -NoNewWindow
+            if ($wingetProc.ExitCode -eq 0) {
+                Refresh-Path
+                Start-Sleep -Seconds 2
+                $verOut = & node.exe --version 2>&1
+                if ($verOut -match "v(\d+)\." -and [int]$Matches[1] -ge 18) {
+                    $nodeVersion = $verOut.Trim()
+                    Log-OK "Node.js 安装完成（winget）: $nodeVersion"
+                    $wingetInstalled = $true
+                    $nodeOk = $true
+                    Dbg "install.ps1:winget-ok" "winget install OK" @{version=$nodeVersion}
+                }
+            }
+            if (-not $wingetInstalled) {
+                Log-Warn "winget 安装未成功（退出码 $($wingetProc.ExitCode)），尝试 msi 安装"
+            }
+        }
+    } catch {
+        Dbg "install.ps1:winget-err" "winget failed" @{error=$_.ToString()}
+        Log-Info "winget 不可用，将下载 msi 安装"
+    }
+
+    # 降级：下载 msi 并静默安装
+    if (-not $nodeOk) {
+        Write-Output "[PROGRESS:1/4] 下载并安装 Node.js"
+        Log-Info "正在下载 Node.js 安装包（约 30MB）..."
+        $msiPath = "$InstallDir\logs\node-v22-x64.msi"
         $urls = @(
-            "https://cdn.npmmirror.com/binaries/node/v22.11.0/node-v22.11.0-win-x64.zip",
-            "https://npmmirror.com/mirrors/node/v22.11.0/node-v22.11.0-win-x64.zip",
-            "https://github.com/JustinBIBERRR/openclaw_quick_installer/releases/latest/download/node-v22-win-x64.zip",
-            "https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip"
+            "https://cdn.npmmirror.com/binaries/node/v22.11.0/node-v22.11.0-x64.msi",
+            "https://nodejs.org/dist/v22.14.0/node-v22.14.0-x64.msi"
         )
-        $ManualUrl = "https://github.com/JustinBIBERRR/openclaw_quick_installer/releases/latest"
-
         $downloaded = $false
         foreach ($url in $urls) {
-            if ($downloaded) { break }
-            Log-Info "尝试下载: $url"
-
-            # 方法 1: curl.exe（Windows 10 自带，SChannel TLS 栈，最可靠）
             try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
                 $curlExe = Join-Path $env:SystemRoot "System32\curl.exe"
                 if (Test-Path $curlExe) {
-                    $curlArgs = @("-sS", "-L", "-C", "-", "--retry", "3", "--retry-delay", "2", "--connect-timeout", "15", "--max-time", "1800", "-o", $NodeZipPath, $url)
-                    $curlStderr = "$InstallDir\logs\curl-stderr.log"
-                    $curlProc = Start-Process -FilePath $curlExe -ArgumentList $curlArgs -NoNewWindow -PassThru -Wait -RedirectStandardError $curlStderr
-                    if ($curlProc.ExitCode -eq 0 -and (Test-Path $NodeZipPath) -and (Get-Item $NodeZipPath).Length -gt 1000000) {
-                        # #region agent log
-                        Dbg "install.ps1:download-curl-ok" "curl download OK" @{url=$url;size=(Get-Item $NodeZipPath).Length}
-                        # #endregion
-                        Log-OK "Node.js 下载完成（curl）"
+                    $curlArgs = @("-sS", "-L", "--retry", "3", "--connect-timeout", "15", "--max-time", "1200", "-o", $msiPath, $url)
+                    $curlProc = Start-Process -FilePath $curlExe -ArgumentList $curlArgs -NoNewWindow -PassThru -Wait
+                    if ($curlProc.ExitCode -eq 0 -and (Test-Path $msiPath)) {
+                        $size = (Get-Item $msiPath -ErrorAction SilentlyContinue).Length
+                        if ($size -and $size -gt 1000000) {
+                            $downloaded = $true
+                            Log-OK "Node.js 安装包下载完成"
+                            Dbg "install.ps1:msi-download-ok" "msi downloaded" @{size=$size}
+                            break
+                        }
+                    }
+                }
+                if (-not $downloaded) {
+                    $wc = New-Object System.Net.WebClient
+                    $wc.DownloadFile($url, $msiPath)
+                    if ((Test-Path $msiPath) -and (Get-Item $msiPath).Length -gt 1000000) {
                         $downloaded = $true
-                        continue
-                    } else {
-                        $curlErr = if (Test-Path $curlStderr) { (Get-Content $curlStderr -Raw).Substring(0, [Math]::Min(300, (Get-Content $curlStderr -Raw).Length)) } else { "" }
-                        if ($curlErr) { Log-Warn "curl: $curlErr" }
-                        if (Test-Path $NodeZipPath) { Remove-Item $NodeZipPath -Force -ErrorAction SilentlyContinue }
-                        # #region agent log
-                        Dbg "install.ps1:download-curl-fail" "curl failed" @{url=$url;exitCode=$curlProc.ExitCode;stderr=$curlErr}
-                        # #endregion
+                        Log-OK "Node.js 安装包下载完成"
+                        break
                     }
                 }
             } catch {
-                # #region agent log
-                Dbg "install.ps1:download-curl-err" "curl exception" @{error=$_.ToString()}
-                # #endregion
-            }
-
-            # 方法 2: .NET WebClient（fallback，某些系统 TLS 可能失败）
-            try {
-                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                $wc = New-Object System.Net.WebClient
-                $wc.DownloadFile($url, $NodeZipPath)
-                if ((Test-Path $NodeZipPath) -and (Get-Item $NodeZipPath).Length -gt 1000000) {
-                    # #region agent log
-                    Dbg "install.ps1:download-wc-ok" "WebClient download OK" @{url=$url;size=(Get-Item $NodeZipPath).Length}
-                    # #endregion
-                    Log-OK "Node.js 下载完成（WebClient）"
-                    $downloaded = $true
-                    continue
-                }
-            } catch {
-                # #region agent log
-                Dbg "install.ps1:download-wc-fail" "WebClient failed" @{url=$url;error=$_.ToString()}
-                # #endregion
-                Log-Warn "源不可用: $url"
+                Log-Warn "下载失败: $url"
             }
         }
-
-        # 最终检查：是否有用户预先手动放好的 zip
-        if (-not $downloaded -and -not (Test-Path $NodeZipPath)) {
-            $altPath = "$InstallDir\node-v22-win-x64.zip"
-            $altPath2 = Join-Path ([Environment]::GetFolderPath('UserProfile')) "Downloads\node-v22-win-x64.zip"
-            if ((Test-Path $altPath) -and (Get-Item $altPath).Length -gt 1000000) {
-                $NodeZipPath = $altPath
-                $downloaded = $true
-                Log-OK "发现手动放置的 Node.js: $altPath"
-            } elseif ((Test-Path $altPath2) -and (Get-Item $altPath2).Length -gt 1000000) {
-                $NodeZipPath = $altPath2
-                $downloaded = $true
-                Log-OK "发现下载目录中的 Node.js: $altPath2"
-            }
-        }
-
         if (-not $downloaded) {
-            # #region agent log
-            Dbg "install.ps1:download-all-fail" "ALL downloads FAILED" @{}
-            # #endregion
-            Log-Error "所有自动下载源均失败。"
-            Log-Error "请手动下载 Node.js 运行时并放到安装目录后重试："
-            Log-Error "  1. 用浏览器打开: $ManualUrl"
-            Log-Error "  2. 下载 node-v22-win-x64.zip"
-            Log-Error "  3. 放到: $InstallDir\"
-            Log-Error "  4. 重新运行安装器"
-            Write-Output "[MANUAL_DOWNLOAD]$ManualUrl"
+            Log-Error "无法下载 Node.js 安装包，请检查网络或手动从 https://nodejs.org 安装后重试"
+            Dbg "install.ps1:msi-download-fail" "msi download failed" @{}
             exit 1
         }
-    } else {
-        # #region agent log
-        Dbg "install.ps1:zip-exists" "zip found at path" @{NodeZipPath=$NodeZipPath;size=(Get-Item $NodeZipPath).Length}
-        # #endregion
-    }
-
-    Write-Output "[PROGRESS:1/4] 解压 Node.js 运行时"
-    Log-Info "解压 Node.js v22..."
-
-    try {
-        Expand-Archive -Path $NodeZipPath -DestinationPath "$InstallDir\runtime" -Force
-        $extracted = Get-ChildItem "$InstallDir\runtime" -Directory | Where-Object { $_.Name -like "node-*" } | Select-Object -First 1
-        if ($extracted) {
-            Rename-Item -Path $extracted.FullName -NewName "node" -Force
+        Log-Info "正在静默安装 Node.js..."
+        $msiProc = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/i", $msiPath, "/quiet", "/qn", "/norestart") -Wait -PassThru -NoNewWindow
+        Refresh-Path
+        Start-Sleep -Seconds 3
+        $verOut = & node.exe --version 2>&1
+        if ($verOut -match "v(\d+)\." -and [int]$Matches[1] -ge 18) {
+            $nodeVersion = $verOut.Trim()
+            Log-OK "Node.js 安装完成: $nodeVersion"
+            $nodeOk = $true
+            Dbg "install.ps1:msi-install-ok" "msi install OK" @{version=$nodeVersion}
+        } else {
+            Log-Error "Node.js 安装后仍无法识别，请关闭安装器后重新打开再试"
+            exit 1
         }
-        # #region agent log
-        Dbg "install.ps1:extract-ok" "Node.js extracted OK" @{nodeExists=(Test-Path "$InstallDir\runtime\node\node.exe")}
-        # #endregion
-        Log-OK "Node.js 解压完成"
-    } catch {
-        # #region agent log
-        Dbg "install.ps1:extract-fail" "extract FAILED" @{error=$_.ToString()}
-        # #endregion
-        Log-Error "解压失败: $_"
-        exit 1
     }
 }
 
-# 验证 node.exe 可用
-Log-Info "验证 Node.js 可用性..."
-if (-not (Test-Path "$RUNTIME_DIR\node.exe")) {
-    Log-Error "node.exe 未找到于: $RUNTIME_DIR"
+if (-not $nodeOk -or -not $nodeVersion) {
+    Log-Error "Node.js 不可用，安装中止"
     exit 1
 }
-$nodeVersion = & "$RUNTIME_DIR\node.exe" --version 2>&1
-Log-OK "Node.js 就绪: $nodeVersion（路径: $RUNTIME_DIR）"
 
-# ── 阶段 3: 系统环境优化 ─────────────────────────────────────────────────
+# ── 阶段 2: 安装 OpenClaw CLI（系统全局）────────────────────────────────────
 
-Write-Output "[PROGRESS:2/4] 优化系统环境"
-Log-Info "配置系统环境..."
+Write-Output "[PROGRESS:2/4] 安装 OpenClaw CLI"
+Log-Info "正在安装 openclaw（约 1-3 分钟）..."
+Log-Dim "来源: registry.npmmirror.com"
 
-# 开启 Windows 长路径支持
+$npmLogOut = "$InstallDir\logs\npm-install.log"
+$npmLogErr = "$InstallDir\logs\npm-install-err.log"
 try {
-    Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
-        -Name "LongPathsEnabled" -Value 1 -Type DWord -ErrorAction SilentlyContinue
-    Log-OK "Windows 长路径支持已开启"
-} catch {
-    Log-Warn "无法修改注册表（长路径），继续安装"
-}
+    $proc = Start-Process -FilePath "npm.cmd" -ArgumentList @(
+        "install", "-g", "openclaw",
+        "--registry", "https://registry.npmmirror.com",
+        "--no-audit", "--no-fund"
+    ) -NoNewWindow -PassThru -Wait -RedirectStandardOutput $npmLogOut -RedirectStandardError $npmLogErr
 
-# 将安装目录加入 Windows Defender 排除列表（防止 node.exe 被误删）
-try {
-    Add-MpPreference -ExclusionPath $InstallDir -ErrorAction SilentlyContinue
-    Log-OK "已将安装目录加入 Defender 排除列表"
-} catch {
-    Log-Warn "无法配置 Defender 排除项（可忽略）"
-}
-
-# 进程级 PATH 注入（不污染系统环境变量）
-$env:PATH = "$RUNTIME_DIR;$InstallDir\npm-global\bin;$env:PATH"
-$env:NPM_CONFIG_PREFIX = "$InstallDir\npm-global"
-$env:OPENCLAW_CONFIG_PATH = "$InstallDir\data\openclaw.json"
-
-# 配置 npm 镜像（国内加速）
-Log-Info "配置 npm 镜像（npmmirror）..."
-try {
-    & "$RUNTIME_DIR\npm.cmd" config set registry https://registry.npmmirror.com --prefix "$InstallDir\npm-global" 2>&1 | ForEach-Object { Log-Dim $_ }
-    & "$RUNTIME_DIR\npm.cmd" config set strict-ssl false --prefix "$InstallDir\npm-global" 2>&1 | Out-Null
-    # #region agent log
-    Dbg "install.ps1:npm-config-ok" "npm config done" @{}
-    # #endregion
-    Log-OK "npm 镜像配置完成"
-} catch {
-    # #region agent log
-    Dbg "install.ps1:npm-config-fail" "npm config FAILED" @{error=$_.ToString()}
-    # #endregion
-    Log-Warn "npm 配置失败（可忽略）: $_"
-}
-
-# ── 阶段 4: 安装 OpenClaw CLI ────────────────────────────────────────────
-
-Write-Output "[PROGRESS:3/4] 安装 OpenClaw CLI"
-Log-Info "正在安装 openclaw（约 1-3 分钟，取决于网速）..."
-Log-Dim "来源: registry.npmmirror.com（国内镜像）"
-
-$npmArgs = @(
-    "install", "-g", "openclaw",
-    "--prefix", "$InstallDir\npm-global",
-    "--registry", "https://registry.npmmirror.com",
-    "--no-audit", "--no-fund"
-)
-
-try {
-    $proc = Start-Process -FilePath "$RUNTIME_DIR\npm.cmd" `
-        -ArgumentList $npmArgs `
-        -NoNewWindow -PassThru -Wait `
-        -RedirectStandardOutput "$InstallDir\logs\npm-install.log" `
-        -RedirectStandardError "$InstallDir\logs\npm-install-err.log"
-
-    # 流式输出日志
-    if (Test-Path "$InstallDir\logs\npm-install.log") {
-        Get-Content "$InstallDir\logs\npm-install.log" | ForEach-Object {
+    if (Test-Path $npmLogOut) {
+        Get-Content $npmLogOut | ForEach-Object {
             if ($_ -match "added \d+ package") { Log-OK $_ }
             elseif ($_ -match "warn") { Log-Warn $_ }
             else { Log-Dim $_ }
         }
     }
 
-    # #region agent log
-    $npmExit = $proc.ExitCode
-    $errContent = if (Test-Path "$InstallDir\logs\npm-install-err.log") { Get-Content "$InstallDir\logs\npm-install-err.log" -Raw } else { "" }
-    $outContent = if (Test-Path "$InstallDir\logs\npm-install.log") { Get-Content "$InstallDir\logs\npm-install.log" -Raw } else { "" }
-    Dbg "install.ps1:npm-install-done" "npm install finished" @{exitCode=$npmExit;stderr=$errContent.Substring(0,[Math]::Min(500,$errContent.Length));stdout=$outContent.Substring(0,[Math]::Min(500,$outContent.Length))}
-    # #endregion
+    $errContent = ""
+    $outContent = ""
+    if (Test-Path $npmLogErr) { $errContent = [string](Get-Content $npmLogErr -Raw) }
+    if (Test-Path $npmLogOut) { $outContent = [string](Get-Content $npmLogOut -Raw) }
+    $errLen = if ($errContent) { $errContent.Length } else { 0 }
+    $outLen = if ($outContent) { $outContent.Length } else { 0 }
+    Dbg "install.ps1:npm-install-done" "npm install finished" @{exitCode=$proc.ExitCode;stderrLen=$errLen;stdoutLen=$outLen}
+
     if ($proc.ExitCode -ne 0) {
-        if (Test-Path "$InstallDir\logs\npm-install-err.log") {
-            Get-Content "$InstallDir\logs\npm-install-err.log" | ForEach-Object { Log-Error $_ }
+        if (Test-Path $npmLogErr) {
+            Get-Content $npmLogErr | ForEach-Object { Log-Error $_ }
         }
         Log-Error "npm install 失败（退出码 $($proc.ExitCode)）"
         exit 1
     }
 } catch {
-    # #region agent log
     Dbg "install.ps1:npm-exec-fail" "npm execution FAILED" @{error=$_.ToString()}
-    # #endregion
     Log-Error "npm 执行失败: $_"
     exit 1
 }
 
-# 验证安装 —— 找 openclaw 的 main entry，兼容所有 npm 版本和 prefix 布局
-Write-Output "[PROGRESS:4/4] 验证安装"
-Log-Info "验证 OpenClaw 安装..."
-$ocModuleDir = "$InstallDir\npm-global\node_modules\openclaw"
-if (-not (Test-Path $ocModuleDir)) {
-    # #region agent log
-    Dbg "install.ps1:verify-fail" "openclaw module dir not found" @{expected=$ocModuleDir}
-    # #endregion
-    Log-Error "openclaw 模块目录未找到，安装可能不完整: $ocModuleDir"
-    exit 1
+# ── 阶段 3: 验证安装 ───────────────────────────────────────────────────────
+
+Write-Output "[PROGRESS:3/4] 验证安装"
+Refresh-Path
+Log-Info "验证 OpenClaw..."
+$ocVer = & openclaw --version 2>&1
+if ($LASTEXITCODE -ne 0 -and -not $ocVer) {
+    $ocVer = & openclaw.cmd --version 2>&1
+}
+if ($ocVer) {
+    Log-OK "OpenClaw 版本: $($ocVer -join ' ')"
+} else {
+    Log-Warn "无法读取 openclaw 版本，但继续完成安装"
 }
 
-# 找 main entry（package.json 里的 bin 字段）
-$ocPkgJson = "$ocModuleDir\package.json"
-$ocMainJs = $null
-if (Test-Path $ocPkgJson) {
-    try {
-        $pkg = Get-Content $ocPkgJson -Raw | ConvertFrom-Json
-        $binVal = if ($pkg.bin -is [string]) { $pkg.bin } elseif ($pkg.bin.openclaw) { $pkg.bin.openclaw } else { $null }
-        if ($binVal) { $ocMainJs = (Join-Path $ocModuleDir $binVal.TrimStart("./\")) }
-    } catch {}
-}
-# fallback 常见路径
-if (-not $ocMainJs -or -not (Test-Path $ocMainJs)) {
-    foreach ($candidate in @("bin/openclaw.js","bin/index.js","dist/cli.js","cli.js","index.js")) {
-        $p = Join-Path $ocModuleDir $candidate
-        if (Test-Path $p) { $ocMainJs = $p; break }
-    }
-}
+# ── 阶段 4: 写入安装信息 ───────────────────────────────────────────────────
 
-$ocVersion = if ($ocMainJs) {
-    & "$RUNTIME_DIR\node.exe" $ocMainJs --version 2>&1
-} else { "unknown" }
-Log-OK "OpenClaw 版本: $ocVersion"
-
-# 构造可执行路径（供 gateway 使用）
-$ocCmd = if ($ocMainJs) { $ocMainJs } else { "$ocModuleDir\bin\openclaw.js" }
-
-# 写入安装信息
+Write-Output "[PROGRESS:4/4] 完成"
 $installInfo = @{
-    oc_cmd       = $ocCmd
-    oc_main_js   = $ocMainJs
-    node_dir     = $RUNTIME_DIR
-    npm_prefix   = "$InstallDir\npm-global"
+    install_dir  = $InstallDir
+    port         = 18789
     installed_at = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
 } | ConvertTo-Json
 $installInfo | Out-File "$InstallDir\install-info.json" -Encoding utf8
 
-# #region agent log
 Dbg "install.ps1:complete" "install script completed successfully" @{}
-# #endregion
-Log-OK "OpenClaw CLI 安装完成！"
+Log-OK "OpenClaw 安装完成！"
 Write-Output "[RESULT]install_ok"

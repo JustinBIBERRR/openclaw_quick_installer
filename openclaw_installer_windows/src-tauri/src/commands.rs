@@ -126,14 +126,6 @@ fn write_manifest(manifest: &AppManifest) -> Result<(), String> {
     std::fs::write(path, json).map_err(|e| format!("写入 manifest 失败: {e}"))
 }
 
-fn get_resource_file_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("无法获取资源目录: {e}"))?;
-    Ok(resource_dir.join("resources").join(name))
-}
-
 /// 解析脚本输出行，返回 (level, message)
 fn parse_log_line(line: &str) -> (&'static str, String) {
     if let Some(msg) = line.strip_prefix("[OK]") {
@@ -418,14 +410,13 @@ fn check_network_sync() -> bool {
     ).is_ok()
 }
 
-/// 安装 OpenClaw（解压 Node.js + npm install）
+/// 安装 OpenClaw（winget/msi 安装 Node.js + npm install -g openclaw）
 #[tauri::command]
 pub async fn start_install(
     window: Window,
     app: AppHandle,
     install_dir: String,
 ) -> Result<(), String> {
-    let node_zip = get_resource_file_path(&app, "node-v22-win-x64.zip")?;
     let script = get_script_path(&app, "install.ps1")?;
 
     // #region agent log
@@ -435,26 +426,17 @@ pub async fn start_install(
             r"d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
         ) {
             let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-            let zip_exists = node_zip.exists();
-            let _ = writeln!(f, "{{\"location\":\"commands.rs:start_install\",\"message\":\"paths\",\"data\":{{\"node_zip\":\"{}\",\"zip_exists\":{},\"script\":\"{}\"}},\"timestamp\":{},\"runId\":\"post-fix\",\"hypothesisId\":\"E\"}}",
-                node_zip.display().to_string().replace('\\', "\\\\"),
-                zip_exists,
+            let _ = writeln!(f, "{{\"location\":\"commands.rs:start_install\",\"message\":\"paths\",\"data\":{{\"script\":\"{}\"}},\"timestamp\":{},\"runId\":\"post-fix\",\"hypothesisId\":\"E\"}}",
                 script.display().to_string().replace('\\', "\\\\"),
                 ts);
         }
     }
     // #endregion
 
-    // 发出路径信息到 UI（便于调试）
     window.emit("install-log", serde_json::json!({
         "level": "dim",
         "message": format!("脚本: {}", script.display())
     })).ok();
-    window.emit("install-log", serde_json::json!({
-        "level": "dim",
-        "message": format!("Node zip: {}", node_zip.display())
-    })).ok();
-    // zip 不存在时脚本会自动下载，不在 Rust 层提前中止
 
     let mut manifest = read_manifest(&install_dir).unwrap_or_default();
     manifest.install_dir = install_dir.clone();
@@ -462,12 +444,11 @@ pub async fn start_install(
     write_manifest(&manifest)?;
 
     window
-        .emit("install-progress", serde_json::json!({ "step": 0, "total": 3, "label": "开始安装" }))
+        .emit("install-progress", serde_json::json!({ "step": 0, "total": 4, "label": "开始安装" }))
         .ok();
 
     let env_pairs = vec![
         ("OPENCLAW_INSTALL_DIR".to_string(), install_dir.clone()),
-        ("NODE_ZIP_PATH".to_string(), node_zip.to_string_lossy().to_string()),
     ];
 
     tokio::task::spawn_blocking(move || {
