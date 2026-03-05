@@ -584,6 +584,27 @@ pub async fn start_gateway(
     let script = get_script_path(&app, "gateway.ps1")?;
     let port_str = port.to_string();
 
+    // #region agent log
+    {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+            r"d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
+        ) {
+            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+            let _ = writeln!(f, "{{\"location\":\"commands.rs:start_gateway\",\"message\":\"gateway start\",\"data\":{{\"script\":\"{}\",\"install_dir\":\"{}\",\"port\":{}}},\"timestamp\":{},\"runId\":\"post-fix\",\"hypothesisId\":\"GW\"}}",
+                script.display().to_string().replace('\\', "\\\\"),
+                install_dir.replace('\\', "\\\\"),
+                port,
+                ts);
+        }
+    }
+    // #endregion
+
+    window.emit("gateway-log", serde_json::json!({
+        "level": "info",
+        "message": format!("脚本: {}", script.display())
+    })).ok();
+
     let env_pairs = vec![
         ("GW_ACTION".to_string(), "start".to_string()),
         ("GW_INSTALL_DIR".to_string(), install_dir.clone()),
@@ -591,17 +612,39 @@ pub async fn start_gateway(
     ];
 
     let win_clone = window.clone();
-    tokio::task::spawn_blocking(move || {
+    let result = tokio::task::spawn_blocking(move || {
         run_ps_script_streaming_sync(win_clone, script, env_pairs, "gateway-log")
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|e| e.to_string())?;
+
+    match &result {
+        Ok(r) => {
+            window.emit("gateway-log", serde_json::json!({
+                "level": "info",
+                "message": format!("脚本结果: {}", r)
+            })).ok();
+        }
+        Err(e) => {
+            window.emit("gateway-log", serde_json::json!({
+                "level": "error",
+                "message": format!("脚本错误: {}", e)
+            })).ok();
+        }
+    }
+
+    result?;
 
     // 健康检查：纯 TCP 连接，不再启动 PowerShell
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    window.emit("gateway-log", serde_json::json!({
+        "level": "info",
+        "message": "等待 Gateway 响应..."
+    })).ok();
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     loop {
         if std::time::Instant::now() > deadline {
-            return Err("Gateway 启动超时（60s）".into());
+            return Err("Gateway 启动超时（30s），可能需要更多时间或检查日志".into());
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
         if tcp_port_open(port) {

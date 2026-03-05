@@ -4,7 +4,7 @@ $Action     = if ($env:GW_ACTION)      { $env:GW_ACTION }      else { "status" }
 $InstallDir = if ($env:GW_INSTALL_DIR) { $env:GW_INSTALL_DIR } else { "C:\OpenClaw" }
 $Port       = if ($env:GW_PORT)        { [int]$env:GW_PORT }   else { 18789 }
 
-$ErrorActionPreference = "SilentlyContinue"
+$ErrorActionPreference = "Continue"
 
 function Log-Info  { param($msg) Write-Output "[INFO] $msg" }
 function Log-OK    { param($msg) Write-Output "[OK] $msg" }
@@ -12,9 +12,17 @@ function Log-Warn  { param($msg) Write-Output "[WARN] $msg" }
 function Log-Error { param($msg) Write-Output "[ERROR] $msg" }
 function Log-Dim   { param($msg) Write-Output "[DIM] $msg" }
 
+# 刷新 PATH：从注册表读取最新值（安装 openclaw 后 Tauri 进程的旧 PATH 可能缺少 npm bin）
+function Refresh-Path {
+    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
+                [System.Environment]::GetEnvironmentVariable("PATH", "User")
+}
+Refresh-Path
+
 # 路径与配置（openclaw 从系统 PATH 调用，仅需指定配置目录）
 $MANIFEST    = "$InstallDir\manifest.json"
-$LOG_FILE    = "$InstallDir\logs\gateway.log"
+$STDOUT_LOG  = "$InstallDir\logs\gateway-stdout.log"
+$STDERR_LOG  = "$InstallDir\logs\gateway-stderr.log"
 $CONFIG_FILE = "$InstallDir\data\openclaw.json"
 
 $env:OPENCLAW_CONFIG_PATH = $CONFIG_FILE
@@ -46,10 +54,36 @@ function Test-GatewayHealth {
     } catch { return $false }
 }
 
+# ── 辅助：查找 openclaw 可执行文件 ─────────────────────────────────────────
+
+function Find-OpenClaw {
+    $exe = (Get-Command "openclaw" -ErrorAction SilentlyContinue).Source
+    if ($exe -and (Test-Path $exe)) { return $exe }
+
+    $exe = (Get-Command "openclaw.cmd" -ErrorAction SilentlyContinue).Source
+    if ($exe -and (Test-Path $exe)) { return $exe }
+
+    try {
+        $npmPrefix = (& npm config get prefix 2>&1).Trim()
+        if ($npmPrefix) {
+            $candidate = "$npmPrefix\openclaw.cmd"
+            if (Test-Path $candidate) { return $candidate }
+            $candidate = "$npmPrefix\openclaw"
+            if (Test-Path $candidate) { return $candidate }
+        }
+    } catch {}
+
+    $appDataNpm = "$env:APPDATA\npm\openclaw.cmd"
+    if (Test-Path $appDataNpm) { return $appDataNpm }
+
+    return $null
+}
+
 # ── 启动 ─────────────────────────────────────────────────────────────────
 
 if ($Action -eq "start") {
     Log-Info "启动 Gateway（端口 $Port）..."
+    Log-Info "安装目录: $InstallDir"
 
     if (Test-GatewayHealth) {
         Log-OK "Gateway 已在运行"
@@ -64,36 +98,38 @@ if ($Action -eq "start") {
     }
 
     New-Item -ItemType Directory -Force -Path "$InstallDir\logs" | Out-Null
-    "" | Out-File $LOG_FILE -Encoding utf8
 
     Log-Info "配置文件: $CONFIG_FILE"
-    Log-Info "日志文件: $LOG_FILE"
+    Log-Info "查找 openclaw 可执行文件..."
 
-    # 解析 openclaw 可执行文件完整路径（npm -g 安装生成 .cmd，Start-Process 需要完整路径）
-    $ocExe = (Get-Command "openclaw" -ErrorAction SilentlyContinue).Source
+    $ocExe = Find-OpenClaw
     if (-not $ocExe) {
-        try {
-            $npmPrefix = (& npm config get prefix 2>&1).Trim()
-            $ocExe = "$npmPrefix\openclaw.cmd"
-        } catch {}
-    }
-    if (-not $ocExe -or -not (Test-Path $ocExe)) {
-        Log-Error "找不到 openclaw 可执行文件，请确认已完成安装（npm install -g openclaw）"
+        Log-Error "找不到 openclaw 命令"
+        Log-Error "已搜索: PATH、npm prefix、$env:APPDATA\npm\"
+        Log-Error "当前 PATH: $env:PATH"
+        Log-Error "请确认已完成安装步骤（npm install -g openclaw）"
         Write-Output "[RESULT]failed"
         exit 1
     }
-    Log-Info "openclaw 路径: $ocExe"
+    Log-OK "openclaw 路径: $ocExe"
 
     $procArgs = @("gateway", "--port", $Port, "--allow-unconfigured", "--auth", "none")
+    Log-Info "启动命令: $ocExe $($procArgs -join ' ')"
 
-    $proc = Start-Process -FilePath $ocExe `
-        -ArgumentList $procArgs `
-        -RedirectStandardOutput $LOG_FILE `
-        -RedirectStandardError  $LOG_FILE `
-        -PassThru -WindowStyle Hidden
+    try {
+        $proc = Start-Process -FilePath $ocExe `
+            -ArgumentList $procArgs `
+            -RedirectStandardOutput $STDOUT_LOG `
+            -RedirectStandardError  $STDERR_LOG `
+            -PassThru -WindowStyle Hidden
+    } catch {
+        Log-Error "Start-Process 异常: $_"
+        Write-Output "[RESULT]failed"
+        exit 1
+    }
 
     if (-not $proc -or -not $proc.Id) {
-        Log-Error "无法启动 openclaw 进程"
+        Log-Error "无法启动 openclaw 进程（Start-Process 返回空）"
         Write-Output "[RESULT]failed"
         exit 1
     }
@@ -108,9 +144,10 @@ if ($Action -eq "start") {
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
 
-        if (Test-Path $LOG_FILE) {
-            $lines = Get-Content $LOG_FILE
-            if ($lines -and $lines.Count -gt $lastLineCount) {
+        # 读取 stdout 日志
+        if (Test-Path $STDOUT_LOG) {
+            $lines = @(Get-Content $STDOUT_LOG -ErrorAction SilentlyContinue)
+            if ($lines.Count -gt $lastLineCount) {
                 $newLines = $lines[$lastLineCount..($lines.Count - 1)]
                 foreach ($line in $newLines) {
                     if ($line.Trim() -ne "") { Log-Dim $line }
@@ -123,10 +160,35 @@ if ($Action -eq "start") {
                 $started = $true
                 break
             }
-            if ($logContent -match "unhandledpromiserejection|error:|eaddrinuse|cannot find module") {
+            if ($logContent -match "unhandledpromiserejection|eaddrinuse|cannot find module") {
                 Log-Error "Gateway 启动失败，检测到错误关键词"
                 break
             }
+        }
+
+        # 读取 stderr 日志（可能有有用的错误信息）
+        if (Test-Path $STDERR_LOG) {
+            $errLines = @(Get-Content $STDERR_LOG -ErrorAction SilentlyContinue)
+            $errText = ($errLines -join " ").ToLower()
+            if ($errText -match "error|cannot find module|eaddrinuse") {
+                foreach ($line in $errLines) {
+                    if ($line.Trim() -ne "") { Log-Error $line }
+                }
+                Log-Error "Gateway stderr 报错，中止等待"
+                break
+            }
+        }
+
+        # 进程是否已退出
+        if ($proc.HasExited) {
+            Log-Error "openclaw 进程已退出（退出码: $($proc.ExitCode)）"
+            if (Test-Path $STDERR_LOG) {
+                $errContent = Get-Content $STDERR_LOG -ErrorAction SilentlyContinue
+                foreach ($line in $errContent) {
+                    if ($line.Trim() -ne "") { Log-Error $line }
+                }
+            }
+            break
         }
 
         if (Test-GatewayHealth) {
@@ -136,10 +198,12 @@ if ($Action -eq "start") {
     }
 
     if ($started) {
-        Log-OK "Gateway 已就绪 → http://localhost:$Port"
+        Log-OK "Gateway 已就绪 -> http://localhost:$Port"
         Write-Output "[RESULT]started:$($proc.Id)"
     } else {
-        Log-Error "Gateway 启动超时，请查看日志: $LOG_FILE"
+        Log-Error "Gateway 未能在 60 秒内就绪"
+        Log-Error "stdout 日志: $STDOUT_LOG"
+        Log-Error "stderr 日志: $STDERR_LOG"
         Write-Output "[RESULT]failed"
         exit 1
     }
@@ -152,7 +216,7 @@ elseif ($Action -eq "stop") {
     $stopped = $false
 
     try {
-        $ocStop = (Get-Command "openclaw" -ErrorAction SilentlyContinue).Source
+        $ocStop = Find-OpenClaw
         if ($ocStop) { & $ocStop gateway stop 2>&1 | Out-Null }
         Start-Sleep -Milliseconds 800
         if (-not (Test-GatewayHealth)) {
