@@ -11,6 +11,7 @@ import Launching from "./pages/Launching";
 import Manager from "./pages/Manager";
 import TitleBar from "./components/TitleBar";
 import StepBar from "./components/StepBar";
+import ResizeHandles from "./components/ResizeHandles";
 
 type AppView = "loading" | "wizard" | "manager";
 
@@ -117,6 +118,7 @@ export default function App() {
 
   return (
     <div className="h-screen flex flex-col bg-gray-950 select-none">
+      <ResizeHandles />
       <TitleBar title="OpenClaw 一键安装器" />
       <div className="px-6 pt-4 pb-2">
         <StepBar
