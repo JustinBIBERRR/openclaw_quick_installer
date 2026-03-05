@@ -7,6 +7,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::get_app_state,
+            commands::check_environment,
             commands::run_syscheck,
             commands::start_install,
             commands::validate_api_key,

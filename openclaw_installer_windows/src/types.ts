@@ -32,6 +32,13 @@ export interface AppManifest {
   last_error: string | null;
 }
 
+export interface CheckEnvironmentResult {
+  openclaw_installed: boolean;
+  config_exists: boolean;
+  manifest_complete: boolean;
+  manifest: AppManifest | null;
+}
+
 export interface SysCheckItem {
   key: string;
   label: string;

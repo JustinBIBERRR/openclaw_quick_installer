@@ -72,6 +72,14 @@ pub struct ValidateResult {
     pub message: String,
 }
 
+#[derive(Debug, Serialize)]
+pub struct CheckEnvironmentResult {
+    pub openclaw_installed: bool,
+    pub config_exists: bool,
+    pub manifest_complete: bool,
+    pub manifest: Option<AppManifest>,
+}
+
 // ─── 嵌入 PowerShell 脚本（编译时内嵌，运行时写入临时目录）─────────────────
 static INSTALL_PS1:  &str = include_str!("../scripts/install.ps1");
 static GATEWAY_PS1:  &str = include_str!("../scripts/gateway.ps1");
@@ -248,10 +256,44 @@ fn run_ps_script_streaming_sync(
 
 // ─── Tauri 命令 ───────────────────────────────────────────────────────────
 
-/// 获取应用状态
+/// 获取应用状态（从默认安装目录读取 manifest）
 #[tauri::command]
 pub fn get_app_state() -> Option<AppManifest> {
-    read_manifest("C:\\OpenClaw")
+    let install_dir = default_install_dir_inner();
+    read_manifest(&install_dir)
+}
+
+/// 检测环境是否已配置完成（用于第二次启动时决定跳步）
+#[tauri::command]
+pub fn check_environment() -> CheckEnvironmentResult {
+    refresh_path();
+    let openclaw_installed = find_openclaw_cmd().is_some();
+
+    let config_exists = openclaw_config_dir()
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join("openclaw.json")).ok())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            v.get("models")
+                .and_then(|m| m.get("providers"))
+                .and_then(|p| p.as_object())
+                .map(|o| !o.is_empty())
+        })
+        .unwrap_or(false);
+
+    let install_dir = default_install_dir_inner();
+    let manifest = read_manifest(&install_dir);
+    let manifest_complete = manifest
+        .as_ref()
+        .map(|m| m.phase == "complete")
+        .unwrap_or(false);
+
+    CheckEnvironmentResult {
+        openclaw_installed,
+        config_exists,
+        manifest_complete,
+        manifest,
+    }
 }
 
 /// 系统预检（纯 Rust 实现，不弹出 PowerShell 窗口）
@@ -984,11 +1026,13 @@ fn create_desktop_shortcut(install_dir: &str) -> Result<(), String> {
     let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
     let profile = std::env::var("USERPROFILE").map_err(|_| "无法获取用户目录")?;
     let lnk = PathBuf::from(&profile).join("Desktop").join("OpenClaw Manager.lnk");
+    let exe_esc = exe_path.to_string_lossy().replace('\\', "\\\\").replace('\'', "''");
     let script = format!(
-        "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('{}'); $s.TargetPath = '{}'; $s.WorkingDirectory = '{}'; $s.Description = 'OpenClaw 本地 AI 网关管理器'; $s.Save()",
+        "$ws = New-Object -ComObject WScript.Shell; $s = $ws.CreateShortcut('{}'); $s.TargetPath = '{}'; $s.WorkingDirectory = '{}'; $s.Description = 'OpenClaw 本地 AI 网关管理器'; $s.IconLocation = '{},0'; $s.Save()",
         lnk.to_string_lossy().replace('\\', "\\\\"),
-        exe_path.to_string_lossy().replace('\\', "\\\\"),
-        install_dir.replace('\\', "\\\\")
+        exe_esc,
+        install_dir.replace('\\', "\\\\"),
+        exe_esc
     );
     let mut cmd = Command::new("powershell");
     cmd.args(["-NoProfile", "-Command", &script])

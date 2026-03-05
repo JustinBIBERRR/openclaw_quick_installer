@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-import type { AppManifest, WizardStep, LogEntry, GatewayStatus } from "./types";
+import type { AppManifest, WizardStep, LogEntry, GatewayStatus, CheckEnvironmentResult } from "./types";
 import SysCheck from "./pages/SysCheck";
 import Installing from "./pages/Installing";
 import ApiKeySetup from "./pages/ApiKeySetup";
@@ -47,17 +47,57 @@ export default function App() {
       }
     );
 
-    // 加载应用状态
-    invoke<AppManifest | null>("get_app_state")
-      .then((m) => {
-        setManifest(m);
-        if (m && m.phase === "complete") {
+    // 智能检测环境，决定进入 Manager / 直接启动 Gateway / 配置 API / 全新安装
+    invoke<CheckEnvironmentResult>("check_environment")
+      .then(async (env) => {
+        if (env.manifest_complete && env.manifest) {
+          setManifest(env.manifest);
           setView("manager");
-        } else {
+          return;
+        }
+        if (env.openclaw_installed && env.config_exists) {
+          const m = env.manifest ?? {
+            version: "1.0.0",
+            phase: "fresh",
+            install_dir: await invoke<string>("get_default_install_dir"),
+            gateway_port: 18789,
+            gateway_pid: null,
+            api_provider: "",
+            api_key_configured: true,
+            api_key_verified: false,
+            steps_done: [],
+            last_error: null,
+          };
+          setManifest(m);
+          setWizardStep("launching");
           setView("wizard");
-          if (m && m.phase === "installing") {
-            setWizardStep("installing");
-          }
+          return;
+        }
+        if (env.openclaw_installed && !env.config_exists) {
+          const m = env.manifest ?? {
+            version: "1.0.0",
+            phase: "fresh",
+            install_dir: await invoke<string>("get_default_install_dir"),
+            gateway_port: 18789,
+            gateway_pid: null,
+            api_provider: "",
+            api_key_configured: false,
+            api_key_verified: false,
+            steps_done: ["openclaw_installed"],
+            last_error: null,
+          };
+          setManifest(m);
+          setWizardStep("apikey");
+          setView("wizard");
+          return;
+        }
+        const m = env.manifest ?? null;
+        setManifest(m);
+        setView("wizard");
+        if (m && m.phase === "installing") {
+          setWizardStep("installing");
+        } else {
+          setWizardStep("syscheck");
         }
       })
       .catch(() => setView("wizard"));
