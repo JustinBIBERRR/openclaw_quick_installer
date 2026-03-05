@@ -52,34 +52,72 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
         # #endregion
         Log-Info "Node.js 运行时未内置，正在从镜像下载（约 25MB）..."
         $NodeZipPath = "$InstallDir\node-v22-win-x64.zip"
-        $NodeUrl = "https://npmmirror.com/mirrors/node/v22.11.0/node-v22.11.0-win-x64.zip"
-        try {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-            $wc = New-Object System.Net.WebClient
-            $wc.DownloadFile($NodeUrl, $NodeZipPath)
-            # #region agent log
-            Dbg "install.ps1:download-ok" "primary mirror download OK" @{size=(Get-Item $NodeZipPath).Length}
-            # #endregion
-            Log-OK "Node.js 下载完成: $NodeZipPath"
-        } catch {
-            # #region agent log
-            Dbg "install.ps1:download-primary-fail" "primary mirror FAILED" @{error=$_.ToString()}
-            # #endregion
-            Log-Warn "主镜像下载失败，尝试 nodejs.org 备用源..."
+
+        $urls = @(
+            "https://cdn.npmmirror.com/binaries/node/v22.11.0/node-v22.11.0-win-x64.zip",
+            "https://npmmirror.com/mirrors/node/v22.11.0/node-v22.11.0-win-x64.zip",
+            "https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip"
+        )
+
+        $downloaded = $false
+        foreach ($url in $urls) {
+            if ($downloaded) { break }
+            Log-Info "尝试下载: $url"
+
+            # 方法 1: curl.exe（Windows 10 自带，TLS 更可靠）
             try {
-                $FallbackUrl = "https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip"
-                $wc.DownloadFile($FallbackUrl, $NodeZipPath)
-                # #region agent log
-                Dbg "install.ps1:download-fallback-ok" "fallback download OK" @{size=(Get-Item $NodeZipPath).Length}
-                # #endregion
-                Log-OK "Node.js 下载完成（备用源）: $NodeZipPath"
+                $curlExe = Join-Path $env:SystemRoot "System32\curl.exe"
+                if (Test-Path $curlExe) {
+                    $curlArgs = @("-L", "--retry", "2", "--connect-timeout", "15", "--max-time", "300", "-o", $NodeZipPath, $url)
+                    $curlProc = Start-Process -FilePath $curlExe -ArgumentList $curlArgs -NoNewWindow -PassThru -Wait
+                    if ($curlProc.ExitCode -eq 0 -and (Test-Path $NodeZipPath) -and (Get-Item $NodeZipPath).Length -gt 1000000) {
+                        # #region agent log
+                        Dbg "install.ps1:download-curl-ok" "curl download OK" @{url=$url;size=(Get-Item $NodeZipPath).Length}
+                        # #endregion
+                        Log-OK "Node.js 下载完成（curl）: $NodeZipPath"
+                        $downloaded = $true
+                        continue
+                    } else {
+                        if (Test-Path $NodeZipPath) { Remove-Item $NodeZipPath -Force -ErrorAction SilentlyContinue }
+                        # #region agent log
+                        Dbg "install.ps1:download-curl-fail" "curl failed" @{url=$url;exitCode=$curlProc.ExitCode}
+                        # #endregion
+                    }
+                }
             } catch {
                 # #region agent log
-                Dbg "install.ps1:download-fail" "ALL downloads FAILED" @{error=$_.ToString()}
+                Dbg "install.ps1:download-curl-err" "curl exception" @{error=$_.ToString()}
                 # #endregion
-                Log-Error "Node.js 下载失败，请检查网络后重试: $_"
-                exit 1
             }
+
+            # 方法 2: .NET WebClient（fallback）
+            try {
+                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                $wc = New-Object System.Net.WebClient
+                $wc.DownloadFile($url, $NodeZipPath)
+                if ((Test-Path $NodeZipPath) -and (Get-Item $NodeZipPath).Length -gt 1000000) {
+                    # #region agent log
+                    Dbg "install.ps1:download-wc-ok" "WebClient download OK" @{url=$url;size=(Get-Item $NodeZipPath).Length}
+                    # #endregion
+                    Log-OK "Node.js 下载完成（WebClient）: $NodeZipPath"
+                    $downloaded = $true
+                    continue
+                }
+            } catch {
+                # #region agent log
+                Dbg "install.ps1:download-wc-fail" "WebClient failed" @{url=$url;error=$_.ToString()}
+                # #endregion
+                Log-Warn "下载失败: $url - $_"
+            }
+        }
+
+        if (-not $downloaded) {
+            # #region agent log
+            Dbg "install.ps1:download-all-fail" "ALL downloads FAILED" @{}
+            # #endregion
+            Log-Error "Node.js 下载失败。请手动下载并放至: $NodeZipPath"
+            Log-Error "下载地址: $($urls[0])"
+            exit 1
         }
     } else {
         # #region agent log
