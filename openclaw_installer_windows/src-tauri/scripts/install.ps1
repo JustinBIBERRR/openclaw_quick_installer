@@ -20,6 +20,7 @@ Dbg "install.ps1:start" "script started" @{InstallDir=$InstallDir;NodeZipPath=$N
 
 # ── 阶段 1: 环境准备 ─────────────────────────────────────────────────────
 
+Write-Output "[PROGRESS:0/4] 准备安装目录"
 Log-Info "准备安装目录: $InstallDir"
 try {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -27,6 +28,7 @@ try {
     New-Item -ItemType Directory -Force -Path "$InstallDir\npm-global" | Out-Null
     New-Item -ItemType Directory -Force -Path "$InstallDir\data" | Out-Null
     New-Item -ItemType Directory -Force -Path "$InstallDir\logs" | Out-Null
+    Log-OK "安装目录已就绪: $InstallDir"
     # #region agent log
     Dbg "install.ps1:dirs" "directories created OK" @{dir=$InstallDir}
     # #endregion
@@ -40,11 +42,19 @@ try {
 
 # ── 阶段 2: Node.js 运行时 ────────────────────────────────────────────────
 
+Write-Output "[PROGRESS:1/4] 检测 Node.js 运行时"
+Log-Info "正在检测 Node.js 运行时..."
+
 $RUNTIME_DIR = "$InstallDir\runtime\node"
 $useSystemNode = $false
 
-# 优先检测系统已安装的 Node.js（v18+ 即可）
-if (-not (Test-Path "$RUNTIME_DIR\node.exe")) {
+# 检查内置运行时是否已解压
+if (Test-Path "$RUNTIME_DIR\node.exe") {
+    $existVer = & "$RUNTIME_DIR\node.exe" --version 2>&1
+    Log-OK "已有内置 Node.js: $existVer，跳过下载"
+} else {
+    # 优先检测系统已安装的 Node.js（v18+ 即可）
+    Log-Info "检测系统 Node.js..."
     try {
         $sysNode = Get-Command node.exe -ErrorAction SilentlyContinue
         if ($sysNode) {
@@ -55,31 +65,32 @@ if (-not (Test-Path "$RUNTIME_DIR\node.exe")) {
             if ($sysVer -match "v(\d+)\.") {
                 $major = [int]$Matches[1]
                 if ($major -ge 18) {
-                    Log-OK "检测到系统 Node.js: $sysVer（满足要求 >= v18），跳过下载"
+                    Log-OK "检测到系统 Node.js $sysVer ✓ 路径: $($sysNode.Source)"
+                    Log-Info "版本满足要求（>= v18），跳过下载和解压"
                     $RUNTIME_DIR = Split-Path $sysNode.Source
                     $useSystemNode = $true
                 } else {
-                    Log-Info "系统 Node.js 版本 $sysVer 过低（需 >= v18），将使用内置版本"
+                    Log-Warn "系统 Node.js 版本 $sysVer 过低（需 >= v18），将下载内置版本"
                 }
             }
+        } else {
+            Log-Info "未检测到系统 Node.js，将下载内置版本"
         }
     } catch {
         # #region agent log
         Dbg "install.ps1:sys-node-err" "system node check failed" @{error=$_.ToString()}
         # #endregion
+        Log-Info "Node.js 检测出错，将下载内置版本"
     }
 }
 
-if (Test-Path "$RUNTIME_DIR\node.exe") {
-    Log-OK "Node.js 已存在，跳过解压"
-} elseif ($useSystemNode) {
-    Log-OK "使用系统 Node.js，跳过下载和解压"
-} else {
+if (-not (Test-Path "$RUNTIME_DIR\node.exe") -and -not $useSystemNode) {
     # 若 zip 不存在（portable exe 场景），则自动下载
     if (-not $NodeZipPath -or -not (Test-Path $NodeZipPath)) {
         # #region agent log
         Dbg "install.ps1:download-start" "zip not found, will download" @{NodeZipPath=$NodeZipPath}
         # #endregion
+        Write-Output "[PROGRESS:1/4] 下载 Node.js 运行时"
         Log-Info "Node.js 运行时未内置，正在从镜像下载（约 33MB，视网速可能需要 5-20 分钟）..."
         $NodeZipPath = "$InstallDir\node-v22-win-x64.zip"
 
@@ -181,8 +192,8 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
         # #endregion
     }
 
+    Write-Output "[PROGRESS:1/4] 解压 Node.js 运行时"
     Log-Info "解压 Node.js v22..."
-    Write-Output "[PROGRESS:1/3] 解压 Node.js"
 
     try {
         Expand-Archive -Path $NodeZipPath -DestinationPath "$InstallDir\runtime" -Force
@@ -204,17 +215,17 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
 }
 
 # 验证 node.exe 可用
+Log-Info "验证 Node.js 可用性..."
 if (-not (Test-Path "$RUNTIME_DIR\node.exe")) {
-    Log-Error "node.exe 未找到，解压可能失败"
+    Log-Error "node.exe 未找到于: $RUNTIME_DIR"
     exit 1
 }
-
 $nodeVersion = & "$RUNTIME_DIR\node.exe" --version 2>&1
-Log-OK "Node.js 版本: $nodeVersion"
+Log-OK "Node.js 就绪: $nodeVersion（路径: $RUNTIME_DIR）"
 
 # ── 阶段 3: 系统环境优化 ─────────────────────────────────────────────────
 
-Write-Output "[PROGRESS:2/3] 优化系统环境"
+Write-Output "[PROGRESS:2/4] 优化系统环境"
 Log-Info "配置系统环境..."
 
 # 开启 Windows 长路径支持
@@ -257,9 +268,9 @@ try {
 
 # ── 阶段 4: 安装 OpenClaw CLI ────────────────────────────────────────────
 
-Write-Output "[PROGRESS:3/3] 安装 OpenClaw CLI"
-Log-Info "正在安装 openclaw（约 1-3 分钟）..."
-Log-Dim "来源: registry.npmmirror.com"
+Write-Output "[PROGRESS:3/4] 安装 OpenClaw CLI"
+Log-Info "正在安装 openclaw（约 1-3 分钟，取决于网速）..."
+Log-Dim "来源: registry.npmmirror.com（国内镜像）"
 
 $npmArgs = @(
     "install", "-g", "openclaw",
@@ -306,7 +317,8 @@ try {
 }
 
 # 验证安装 —— 找 openclaw 的 main entry，兼容所有 npm 版本和 prefix 布局
-# npm v7+ 带 --prefix 时 bin link 可能不生成，但 node_modules\openclaw 一定存在
+Write-Output "[PROGRESS:4/4] 验证安装"
+Log-Info "验证 OpenClaw 安装..."
 $ocModuleDir = "$InstallDir\npm-global\node_modules\openclaw"
 if (-not (Test-Path $ocModuleDir)) {
     # #region agent log

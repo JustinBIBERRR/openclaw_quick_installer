@@ -17,10 +17,10 @@ interface Props {
 type InstallPhase = "idle" | "running" | "done" | "failed" | "manual_download";
 
 const INSTALL_STEPS = [
-  "解压 Node.js v22",
-  "系统环境优化",
+  "检测 / 下载 Node.js",
+  "优化系统环境",
   "安装 OpenClaw CLI",
-  "完成",
+  "验证安装",
 ];
 
 export default function Installing({ manifest, logs, addLog, onDone }: Props) {

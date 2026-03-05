@@ -160,7 +160,7 @@ fn run_ps_script_streaming_sync(
     window: Window,
     script_path: PathBuf,
     env_pairs: Vec<(String, String)>,
-    event_name: &'static str,
+    event_name: &str,
 ) -> Result<String, String> {
     // Use -Command with [scriptblock]::Create() to completely bypass ExecutionPolicy.
     // -File triggers policy checks; -Command with inline code does NOT.
@@ -182,16 +182,32 @@ fn run_ps_script_streaming_sync(
     let stderr = child.stderr.take().unwrap();
 
     let win2 = window.clone();
+    let event_name_owned = event_name.to_string();
     let stdout_handle = std::thread::spawn(move || {
         let reader = BufReader::new(stdout);
         let mut last_result = String::new();
         for line in reader.lines().map_while(Result::ok) {
             if line.starts_with("[RESULT]") {
                 last_result = line[8..].to_string();
-            } else if !line.starts_with("[PROGRESS:") {
+            } else if let Some(progress) = line.strip_prefix("[PROGRESS:") {
+                // 解析 "X/Y] Label" 格式，驱动前端步骤进度
+                if let Some(slash) = progress.find('/') {
+                    if let Ok(step) = progress[..slash].parse::<u32>() {
+                        let rest = &progress[slash + 1..];
+                        let total = rest.split(']').next()
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .unwrap_or(4);
+                        let label = rest.split(']').nth(1)
+                            .unwrap_or("").trim().to_string();
+                        win2.emit("install-progress", serde_json::json!({
+                            "step": step, "total": total, "label": label
+                        })).ok();
+                    }
+                }
+            } else {
                 let (level, msg) = parse_log_line(&line);
                 if !msg.is_empty() {
-                    win2.emit(event_name, serde_json::json!({ "level": level, "message": msg }))
+                    win2.emit(&event_name_owned, serde_json::json!({ "level": level, "message": msg }))
                         .ok();
                 }
             }
@@ -199,13 +215,14 @@ fn run_ps_script_streaming_sync(
         last_result
     });
 
+    let event_name_stderr = event_name.to_string();
     std::thread::spawn(move || {
         let reader = BufReader::new(stderr);
         for line in reader.lines().map_while(Result::ok) {
             let t = line.trim().to_string();
             if !t.is_empty() && !t.starts_with("+ ") && !t.starts_with("    +") {
                 window
-                    .emit(event_name, serde_json::json!({ "level": "error", "message": t }))
+                    .emit(&event_name_stderr, serde_json::json!({ "level": "error", "message": t }))
                     .ok();
             }
         }
