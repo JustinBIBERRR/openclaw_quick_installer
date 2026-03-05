@@ -164,7 +164,7 @@ fn run_ps_script_streaming_sync(
     cmd.args([
         "-NoProfile",
         "-ExecutionPolicy",
-        "RemoteSigned",
+        "Bypass",
         "-File",
         &script_path.to_string_lossy(),
     ]);
@@ -610,7 +610,7 @@ pub fn start_gateway_bg(app: AppHandle, install_dir: String, port: u16) -> Resul
     let script = get_script_path(&app, "gateway.ps1")?;
     let mut cmd = Command::new("powershell");
     cmd.args([
-        "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
+        "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-File", &script.to_string_lossy(),
     ])
     .env("GW_ACTION", "start")
@@ -630,7 +630,7 @@ pub fn stop_gateway(app: AppHandle, install_dir: String) -> Result<(), String> {
     let script = get_script_path(&app, "gateway.ps1")?;
     let mut cmd = Command::new("powershell");
     cmd.args([
-        "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
+        "-NoProfile", "-ExecutionPolicy", "Bypass",
         "-File", &script.to_string_lossy(),
     ])
     .env("GW_ACTION", "stop")
