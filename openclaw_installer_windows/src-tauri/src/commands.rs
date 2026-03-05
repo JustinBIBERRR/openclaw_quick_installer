@@ -409,7 +409,7 @@ pub async fn start_install(
     }
     // #endregion
 
-    // 发出路径信息到 UI（便于用户定位问题）
+    // 发出路径信息到 UI（便于调试）
     window.emit("install-log", serde_json::json!({
         "level": "dim",
         "message": format!("脚本: {}", script.display())
@@ -418,16 +418,7 @@ pub async fn start_install(
         "level": "dim",
         "message": format!("Node zip: {}", node_zip.display())
     })).ok();
-
-    // 检查 Node.js zip 是否存在，给出明确错误
-    if !node_zip.exists() {
-        let msg = format!(
-            "Node.js 运行时包未找到，请使用 NSIS 安装包（Setup.exe）而非便携版。\n路径: {}",
-            node_zip.display()
-        );
-        window.emit("install-log", serde_json::json!({"level": "error", "message": msg})).ok();
-        return Err("Node.js 运行时包未找到，请使用安装向导版（Setup.exe）".to_string());
-    }
+    // zip 不存在时脚本会自动下载，不在 Rust 层提前中止
 
     let mut manifest = read_manifest(&install_dir).unwrap_or_default();
     manifest.install_dir = install_dir.clone();

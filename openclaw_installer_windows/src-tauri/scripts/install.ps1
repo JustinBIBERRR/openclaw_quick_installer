@@ -28,9 +28,28 @@ $RUNTIME_DIR = "$InstallDir\runtime\node"
 if (Test-Path "$RUNTIME_DIR\node.exe") {
     Log-OK "Node.js 已存在，跳过解压"
 } else {
+    # 若 zip 不存在（portable exe 场景），则自动下载
     if (-not $NodeZipPath -or -not (Test-Path $NodeZipPath)) {
-        Log-Error "Node.js 便携包未找到: $NodeZipPath"
-        exit 1
+        Log-Info "Node.js 运行时未内置，正在从镜像下载（约 25MB）..."
+        $NodeZipPath = "$InstallDir\node-v22-win-x64.zip"
+        $NodeUrl = "https://npmmirror.com/mirrors/node/v22.11.0/node-v22.11.0-win-x64.zip"
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+            $wc = New-Object System.Net.WebClient
+            $wc.DownloadFile($NodeUrl, $NodeZipPath)
+            Log-OK "Node.js 下载完成: $NodeZipPath"
+        } catch {
+            # 备用镜像 nodejs.org
+            Log-Warn "主镜像下载失败，尝试 nodejs.org 备用源..."
+            try {
+                $FallbackUrl = "https://nodejs.org/dist/v22.14.0/node-v22.14.0-win-x64.zip"
+                $wc.DownloadFile($FallbackUrl, $NodeZipPath)
+                Log-OK "Node.js 下载完成（备用源）: $NodeZipPath"
+            } catch {
+                Log-Error "Node.js 下载失败，请检查网络后重试: $_"
+                exit 1
+            }
+        }
     }
 
     Log-Info "解压 Node.js v22..."
