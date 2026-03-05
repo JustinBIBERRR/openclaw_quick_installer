@@ -160,19 +160,19 @@ fn run_ps_script_streaming_sync(
     env_pairs: Vec<(String, String)>,
     event_name: &'static str,
 ) -> Result<String, String> {
+    // Use -Command with [scriptblock]::Create() to completely bypass ExecutionPolicy.
+    // -File triggers policy checks; -Command with inline code does NOT.
+    let invoke_expr = format!(
+        "& ([scriptblock]::Create([System.IO.File]::ReadAllText('{}')))",
+        script_path.to_string_lossy().replace('\'', "''")
+    );
     let mut cmd = Command::new("powershell");
-    cmd.args([
-        "-NoProfile",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        &script_path.to_string_lossy(),
-    ]);
+    cmd.args(["-NoProfile", "-Command", &invoke_expr]);
     for (k, v) in &env_pairs {
         cmd.env(k, v);
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    no_window!(cmd); // 关键：不弹出 PowerShell 窗口
+    no_window!(cmd);
 
     let mut child = cmd.spawn().map_err(|e| format!("启动 PowerShell 失败: {e}"))?;
 
@@ -211,6 +211,23 @@ fn run_ps_script_streaming_sync(
 
     let result = stdout_handle.join().unwrap_or_default();
     let status = child.wait().map_err(|e| format!("等待进程失败: {e}"))?;
+
+    // #region agent log
+    {
+        use std::io::Write as _;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
+            r"d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
+        ) {
+            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
+            let _ = writeln!(f, "{{\"location\":\"commands.rs:run_ps_done\",\"message\":\"script finished\",\"data\":{{\"exit_code\":{},\"result_len\":{},\"result_preview\":\"{}\",\"event\":\"{}\"}},\"timestamp\":{},\"runId\":\"post-fix\",\"hypothesisId\":\"F\"}}",
+                status.code().unwrap_or(-999),
+                result.len(),
+                result.chars().take(100).collect::<String>().replace('\\', "\\\\").replace('"', "\\\""),
+                event_name,
+                ts);
+        }
+    }
+    // #endregion
 
     if !status.success() && result.is_empty() {
         return Err(format!("脚本退出码: {}", status.code().unwrap_or(-1)));
@@ -608,11 +625,12 @@ pub async fn start_gateway(
 #[tauri::command]
 pub fn start_gateway_bg(app: AppHandle, install_dir: String, port: u16) -> Result<(), String> {
     let script = get_script_path(&app, "gateway.ps1")?;
+    let invoke_expr = format!(
+        "& ([scriptblock]::Create([System.IO.File]::ReadAllText('{}')))",
+        script.to_string_lossy().replace('\'', "''")
+    );
     let mut cmd = Command::new("powershell");
-    cmd.args([
-        "-NoProfile", "-ExecutionPolicy", "Bypass",
-        "-File", &script.to_string_lossy(),
-    ])
+    cmd.args(["-NoProfile", "-Command", &invoke_expr])
     .env("GW_ACTION", "start")
     .env("GW_INSTALL_DIR", &install_dir)
     .env("GW_PORT", port.to_string())
@@ -628,11 +646,12 @@ pub fn start_gateway_bg(app: AppHandle, install_dir: String, port: u16) -> Resul
 #[tauri::command]
 pub fn stop_gateway(app: AppHandle, install_dir: String) -> Result<(), String> {
     let script = get_script_path(&app, "gateway.ps1")?;
+    let invoke_expr = format!(
+        "& ([scriptblock]::Create([System.IO.File]::ReadAllText('{}')))",
+        script.to_string_lossy().replace('\'', "''")
+    );
     let mut cmd = Command::new("powershell");
-    cmd.args([
-        "-NoProfile", "-ExecutionPolicy", "Bypass",
-        "-File", &script.to_string_lossy(),
-    ])
+    cmd.args(["-NoProfile", "-Command", &invoke_expr])
     .env("GW_ACTION", "stop")
     .env("GW_INSTALL_DIR", &install_dir)
     .env("GW_PORT", "18789")
