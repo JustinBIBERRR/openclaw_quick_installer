@@ -71,8 +71,9 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
             try {
                 $curlExe = Join-Path $env:SystemRoot "System32\curl.exe"
                 if (Test-Path $curlExe) {
-                    $curlArgs = @("-L", "--retry", "2", "--connect-timeout", "15", "--max-time", "300", "-o", $NodeZipPath, $url)
-                    $curlProc = Start-Process -FilePath $curlExe -ArgumentList $curlArgs -NoNewWindow -PassThru -Wait
+                    $curlArgs = @("-sS", "-L", "--retry", "2", "--connect-timeout", "15", "--max-time", "300", "-o", $NodeZipPath, $url)
+                    $curlStderr = "$InstallDir\logs\curl-stderr.log"
+                    $curlProc = Start-Process -FilePath $curlExe -ArgumentList $curlArgs -NoNewWindow -PassThru -Wait -RedirectStandardError $curlStderr
                     if ($curlProc.ExitCode -eq 0 -and (Test-Path $NodeZipPath) -and (Get-Item $NodeZipPath).Length -gt 1000000) {
                         # #region agent log
                         Dbg "install.ps1:download-curl-ok" "curl download OK" @{url=$url;size=(Get-Item $NodeZipPath).Length}
@@ -81,9 +82,11 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
                         $downloaded = $true
                         continue
                     } else {
+                        $curlErr = if (Test-Path $curlStderr) { (Get-Content $curlStderr -Raw).Substring(0, [Math]::Min(300, (Get-Content $curlStderr -Raw).Length)) } else { "" }
+                        if ($curlErr) { Log-Warn "curl: $curlErr" }
                         if (Test-Path $NodeZipPath) { Remove-Item $NodeZipPath -Force -ErrorAction SilentlyContinue }
                         # #region agent log
-                        Dbg "install.ps1:download-curl-fail" "curl failed" @{url=$url;exitCode=$curlProc.ExitCode}
+                        Dbg "install.ps1:download-curl-fail" "curl failed" @{url=$url;exitCode=$curlProc.ExitCode;stderr=$curlErr}
                         # #endregion
                     }
                 }
