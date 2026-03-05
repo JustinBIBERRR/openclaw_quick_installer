@@ -50,7 +50,7 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
         # #region agent log
         Dbg "install.ps1:download-start" "zip not found, will download" @{NodeZipPath=$NodeZipPath}
         # #endregion
-        Log-Info "Node.js 运行时未内置，正在从镜像下载（约 25MB）..."
+        Log-Info "Node.js 运行时未内置，正在从镜像下载（约 33MB，视网速可能需要 5-20 分钟）..."
         $NodeZipPath = "$InstallDir\node-v22-win-x64.zip"
 
         # 多源降级：npmmirror CDN → npmmirror 镜像 → GitHub Release 自有 CDN → nodejs.org
@@ -71,7 +71,7 @@ if (Test-Path "$RUNTIME_DIR\node.exe") {
             try {
                 $curlExe = Join-Path $env:SystemRoot "System32\curl.exe"
                 if (Test-Path $curlExe) {
-                    $curlArgs = @("-sS", "-L", "--retry", "2", "--connect-timeout", "15", "--max-time", "300", "-o", $NodeZipPath, $url)
+                    $curlArgs = @("-sS", "-L", "-C", "-", "--retry", "3", "--retry-delay", "2", "--connect-timeout", "15", "--max-time", "1800", "-o", $NodeZipPath, $url)
                     $curlStderr = "$InstallDir\logs\curl-stderr.log"
                     $curlProc = Start-Process -FilePath $curlExe -ArgumentList $curlArgs -NoNewWindow -PassThru -Wait -RedirectStandardError $curlStderr
                     if ($curlProc.ExitCode -eq 0 -and (Test-Path $NodeZipPath) -and (Get-Item $NodeZipPath).Length -gt 1000000) {
