@@ -305,25 +305,49 @@ try {
     exit 1
 }
 
-# 验证安装
-$ocCmd = "$InstallDir\npm-global\bin\openclaw.cmd"
-if (-not (Test-Path $ocCmd)) {
-    # 兼容 npm v7+ 的路径
-    $ocCmd = "$InstallDir\npm-global\openclaw.cmd"
-}
-if (-not (Test-Path $ocCmd)) {
-    Log-Error "openclaw 命令未找到，安装可能不完整"
+# 验证安装 —— 找 openclaw 的 main entry，兼容所有 npm 版本和 prefix 布局
+# npm v7+ 带 --prefix 时 bin link 可能不生成，但 node_modules\openclaw 一定存在
+$ocModuleDir = "$InstallDir\npm-global\node_modules\openclaw"
+if (-not (Test-Path $ocModuleDir)) {
+    # #region agent log
+    Dbg "install.ps1:verify-fail" "openclaw module dir not found" @{expected=$ocModuleDir}
+    # #endregion
+    Log-Error "openclaw 模块目录未找到，安装可能不完整: $ocModuleDir"
     exit 1
 }
 
-$ocVersion = & "$RUNTIME_DIR\node.exe" "$InstallDir\npm-global\lib\node_modules\openclaw\bin\openclaw.js" --version 2>&1
+# 找 main entry（package.json 里的 bin 字段）
+$ocPkgJson = "$ocModuleDir\package.json"
+$ocMainJs = $null
+if (Test-Path $ocPkgJson) {
+    try {
+        $pkg = Get-Content $ocPkgJson -Raw | ConvertFrom-Json
+        $binVal = if ($pkg.bin -is [string]) { $pkg.bin } elseif ($pkg.bin.openclaw) { $pkg.bin.openclaw } else { $null }
+        if ($binVal) { $ocMainJs = (Join-Path $ocModuleDir $binVal.TrimStart("./\")) }
+    } catch {}
+}
+# fallback 常见路径
+if (-not $ocMainJs -or -not (Test-Path $ocMainJs)) {
+    foreach ($candidate in @("bin/openclaw.js","bin/index.js","dist/cli.js","cli.js","index.js")) {
+        $p = Join-Path $ocModuleDir $candidate
+        if (Test-Path $p) { $ocMainJs = $p; break }
+    }
+}
+
+$ocVersion = if ($ocMainJs) {
+    & "$RUNTIME_DIR\node.exe" $ocMainJs --version 2>&1
+} else { "unknown" }
 Log-OK "OpenClaw 版本: $ocVersion"
+
+# 构造可执行路径（供 gateway 使用）
+$ocCmd = if ($ocMainJs) { $ocMainJs } else { "$ocModuleDir\bin\openclaw.js" }
 
 # 写入安装信息
 $installInfo = @{
     oc_cmd       = $ocCmd
+    oc_main_js   = $ocMainJs
     node_dir     = $RUNTIME_DIR
-    npm_bin      = "$InstallDir\npm-global\bin"
+    npm_prefix   = "$InstallDir\npm-global"
     installed_at = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
 } | ConvertTo-Json
 $installInfo | Out-File "$InstallDir\install-info.json" -Encoding utf8
