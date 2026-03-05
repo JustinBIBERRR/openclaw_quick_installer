@@ -72,6 +72,39 @@ pub struct ValidateResult {
     pub message: String,
 }
 
+// ─── 嵌入 PowerShell 脚本（编译时内嵌，运行时写入临时目录）─────────────────
+static INSTALL_PS1:  &str = include_str!("../scripts/install.ps1");
+static GATEWAY_PS1:  &str = include_str!("../scripts/gateway.ps1");
+static SYSCHECK_PS1: &str = include_str!("../scripts/syscheck.ps1");
+
+/// 将嵌入脚本写入临时目录，返回路径（每次调用覆盖写入，保证最新）
+fn get_embedded_script(name: &str) -> Result<PathBuf, String> {
+    let content = match name {
+        "install.ps1"  => INSTALL_PS1,
+        "gateway.ps1"  => GATEWAY_PS1,
+        "syscheck.ps1" => SYSCHECK_PS1,
+        _ => return Err(format!("未知脚本: {}", name)),
+    };
+    let tmp = std::env::temp_dir().join("openclaw_scripts");
+    std::fs::create_dir_all(&tmp).map_err(|e| format!("创建临时目录失败: {e}"))?;
+    let path = tmp.join(name);
+    std::fs::write(&path, content.as_bytes()).map_err(|e| format!("写入脚本失败: {e}"))?;
+    Ok(path)
+}
+
+/// 优先使用 resource_dir 里的脚本（NSIS 安装场景），
+/// 若不存在则 fallback 到嵌入脚本（portable / dev 场景）
+fn get_script_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        let p = resource_dir.join("scripts").join(name);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+    // fallback：从嵌入内容写到临时目录
+    get_embedded_script(name)
+}
+
 // ─── 辅助函数 ─────────────────────────────────────────────────────────────
 
 fn manifest_path(install_dir: &str) -> PathBuf {
@@ -91,14 +124,6 @@ fn write_manifest(manifest: &AppManifest) -> Result<(), String> {
     let json = serde_json::to_string_pretty(manifest)
         .map_err(|e| format!("序列化失败: {e}"))?;
     std::fs::write(path, json).map_err(|e| format!("写入 manifest 失败: {e}"))
-}
-
-fn get_script_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
-    let resource_dir = app
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("无法获取资源目录: {e}"))?;
-    Ok(resource_dir.join("scripts").join(name))
 }
 
 fn get_resource_file_path(app: &AppHandle, name: &str) -> Result<PathBuf, String> {
@@ -366,6 +391,7 @@ pub async fn start_install(
 ) -> Result<(), String> {
     let node_zip = get_resource_file_path(&app, "node-v22-win-x64.zip")?;
     let script = get_script_path(&app, "install.ps1")?;
+
     // #region agent log
     {
         use std::io::Write;
@@ -374,7 +400,7 @@ pub async fn start_install(
         ) {
             let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
             let zip_exists = node_zip.exists();
-            let _ = writeln!(f, "{{\"location\":\"commands.rs:start_install\",\"message\":\"paths\",\"data\":{{\"node_zip\":\"{}\",\"zip_exists\":{},\"script\":\"{}\"}},\"timestamp\":{},\"runId\":\"install-debug\",\"hypothesisId\":\"E\"}}",
+            let _ = writeln!(f, "{{\"location\":\"commands.rs:start_install\",\"message\":\"paths\",\"data\":{{\"node_zip\":\"{}\",\"zip_exists\":{},\"script\":\"{}\"}},\"timestamp\":{},\"runId\":\"post-fix\",\"hypothesisId\":\"E\"}}",
                 node_zip.display().to_string().replace('\\', "\\\\"),
                 zip_exists,
                 script.display().to_string().replace('\\', "\\\\"),
@@ -382,6 +408,26 @@ pub async fn start_install(
         }
     }
     // #endregion
+
+    // 发出路径信息到 UI（便于用户定位问题）
+    window.emit("install-log", serde_json::json!({
+        "level": "dim",
+        "message": format!("脚本: {}", script.display())
+    })).ok();
+    window.emit("install-log", serde_json::json!({
+        "level": "dim",
+        "message": format!("Node zip: {}", node_zip.display())
+    })).ok();
+
+    // 检查 Node.js zip 是否存在，给出明确错误
+    if !node_zip.exists() {
+        let msg = format!(
+            "Node.js 运行时包未找到，请使用 NSIS 安装包（Setup.exe）而非便携版。\n路径: {}",
+            node_zip.display()
+        );
+        window.emit("install-log", serde_json::json!({"level": "error", "message": msg})).ok();
+        return Err("Node.js 运行时包未找到，请使用安装向导版（Setup.exe）".to_string());
+    }
 
     let mut manifest = read_manifest(&install_dir).unwrap_or_default();
     manifest.install_dir = install_dir.clone();
