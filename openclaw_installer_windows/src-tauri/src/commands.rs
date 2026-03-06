@@ -640,25 +640,17 @@ fn build_openclaw_config(
     let profile = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".into());
     let workspace = format!("{}/.openclaw/workspace", profile.replace('\\', "/"));
 
+    let now = chrono_now_iso();
+
     serde_json::json!({
-        "identity": {
-            "name": "Clawd",
-            "theme": "helpful assistant",
-            "emoji": "\u{1F99E}"
+        "meta": {
+            "lastTouchedAt": now,
+            "createdBy": "openclaw-installer"
         },
-        "agent": {
-            "workspace": workspace,
-            "model": {
-                "primary": primary_model
-            }
-        },
-        "gateway": {
-            "mode": "local",
-            "port": 18789,
-            "bind": "loopback",
-            "auth": {
-                "mode": "none"
-            }
+        "wizard": {
+            "lastRunAt": now,
+            "lastRunCommand": "installer",
+            "lastRunMode": "local"
         },
         "models": {
             "mode": "merge",
@@ -669,8 +661,81 @@ fn build_openclaw_config(
                     "models": [{ "id": model, "name": model }]
                 }
             }
+        },
+        "agents": {
+            "defaults": {
+                "workspace": workspace,
+                "model": {
+                    "primary": primary_model
+                },
+                "compaction": {
+                    "mode": "safeguard"
+                },
+                "maxConcurrent": 3
+            }
+        },
+        "messages": {
+            "ackReactionScope": "group-mentions"
+        },
+        "commands": {
+            "native": "auto",
+            "text": true,
+            "bash": false,
+            "config": false,
+            "debug": false,
+            "restart": false
+        },
+        "session": {
+            "scope": "per-sender",
+            "reset": {
+                "mode": "daily",
+                "atHour": 4,
+                "idleMinutes": 60
+            },
+            "resetTriggers": ["/new", "/reset"]
+        },
+        "gateway": {
+            "mode": "local",
+            "port": 18789,
+            "bind": "loopback",
+            "auth": {
+                "mode": "none"
+            }
         }
     })
+}
+
+fn chrono_now_iso() -> String {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = d.as_secs();
+    let (y, m, day, h, min, s) = unix_to_utc(secs);
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", y, m, day, h, min, s)
+}
+
+fn unix_to_utc(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
+    let s = secs % 60;
+    let total_min = secs / 60;
+    let min = total_min % 60;
+    let total_h = total_min / 60;
+    let h = total_h % 24;
+    let mut days = total_h / 24;
+    let mut y = 1970u64;
+    loop {
+        let ydays = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if days < ydays { break; }
+        days -= ydays;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let mdays = [31, if leap {29} else {28}, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut m = 0u64;
+    for (i, &md) in mdays.iter().enumerate() {
+        if days < md as u64 { m = i as u64 + 1; break; }
+        days -= md as u64;
+    }
+    (y, m, days + 1, h, min, s)
 }
 
 /// 在系统 PATH 中查找 openclaw.cmd（Rust 实现，不依赖 PowerShell）
