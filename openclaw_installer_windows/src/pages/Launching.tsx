@@ -60,6 +60,8 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
   const [fixResult, setFixResult] = useState<CommandResult | null>(null);
   const [copied, setCopied] = useState(false);
   const [recoveryTips, setRecoveryTips] = useState<string[]>([]);
+  const [openingChat, setOpeningChat] = useState(false);
+  const [chatLocked, setChatLocked] = useState(false);
   const startedRef = useRef(false);
   const cancelledRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -303,6 +305,20 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
 
   const chatUrl = `http://localhost:${manifest.gateway_port || 18789}/chat`;
 
+  async function handleOpenChat() {
+    if (openingChat || chatLocked) return;
+    setOpeningChat(true);
+    setChatLocked(true);
+    addLog("info", "正在打开浏览器，请稍候...");
+    try {
+      await invoke("open_url", { url: chatUrl });
+    } finally {
+      setOpeningChat(false);
+      // 防止连续点击导致重复打开多个页面
+      setTimeout(() => setChatLocked(false), 8000);
+    }
+  }
+
   return (
     <div className="h-full flex flex-col px-6 py-4 gap-4 overflow-y-auto">
       <div>
@@ -512,11 +528,12 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
           <div className="flex items-center justify-between">
             <p className="text-sm text-brand-400">安装完成！桌面快捷方式已创建</p>
             <button
-              onClick={() => invoke("open_url", { url: chatUrl })}
-              className="flex items-center gap-2 px-6 py-2 bg-brand-500 hover:bg-brand-600 text-gray-950 font-semibold text-sm rounded-lg transition-colors"
+              onClick={handleOpenChat}
+              disabled={openingChat || chatLocked}
+              className="flex items-center gap-2 px-6 py-2 bg-brand-500 hover:bg-brand-600 disabled:bg-gray-700 disabled:text-gray-400 text-gray-950 font-semibold text-sm rounded-lg transition-colors"
             >
-              <ExternalLink size={14} />
-              打开 OpenClaw
+              {openingChat ? <Loader size={14} className="animate-spin" /> : <ExternalLink size={14} />}
+              {openingChat ? "打开中..." : chatLocked ? "请稍候..." : "打开 OpenClaw"}
             </button>
           </div>
         )}

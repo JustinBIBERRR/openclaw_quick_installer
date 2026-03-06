@@ -42,6 +42,8 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
   const [lastErrorHint, setLastErrorHint] = useState<string | null>(null);
   const [doctorResult, setDoctorResult] = useState<DoctorResult | null>(null);
   const [showDoctorPanel, setShowDoctorPanel] = useState(false);
+  const [openingChat, setOpeningChat] = useState(false);
+  const [chatLocked, setChatLocked] = useState(false);
 
   const port = manifest.gateway_port || 18789;
   const chatUrl = `http://localhost:${port}/chat`;
@@ -194,6 +196,30 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
     }
   }
 
+  async function openChat() {
+    if (openingChat || chatLocked) return;
+    setOpeningChat(true);
+    setChatLocked(true);
+    try {
+      if (cliCaps?.has_dashboard) {
+        const result = await invoke<CommandResult>("run_dashboard");
+        if (!result.success) {
+          setLastError(result.message);
+          setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint || null));
+        }
+      } else {
+        await invoke("open_url", { url: chatUrl });
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastError(msg);
+      setLastErrorHint(buildManagerRecoveryHint(msg, null));
+    } finally {
+      setOpeningChat(false);
+      setTimeout(() => setChatLocked(false), 8000);
+    }
+  }
+
   const providerLabel: Record<string, string> = {
     anthropic: "Anthropic Claude",
     openai: "OpenAI GPT",
@@ -237,27 +263,12 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
             {gatewayStatus === "running" ? (
               <>
                 <button
-                  onClick={async () => {
-                    try {
-                      if (cliCaps?.has_dashboard) {
-                        const result = await invoke<CommandResult>("run_dashboard");
-                        if (!result.success) {
-                          setLastError(result.message);
-                          setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint || null));
-                        }
-                      } else {
-                        await invoke("open_url", { url: chatUrl });
-                      }
-                    } catch (e) {
-                      const msg = e instanceof Error ? e.message : String(e);
-                      setLastError(msg);
-                      setLastErrorHint(buildManagerRecoveryHint(msg, null));
-                    }
-                  }}
-                  className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-brand-500 hover:bg-brand-600 text-gray-950 font-semibold text-sm rounded-lg transition-colors"
+                  onClick={openChat}
+                  disabled={openingChat || chatLocked}
+                  className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-brand-500 hover:bg-brand-600 disabled:bg-gray-700 disabled:text-gray-400 text-gray-950 font-semibold text-sm rounded-lg transition-colors"
                 >
-                  <ExternalLink size={15} />
-                  打开 Chat 界面
+                  {openingChat ? <Loader size={15} className="animate-spin" /> : <ExternalLink size={15} />}
+                  {openingChat ? "打开中..." : chatLocked ? "请稍候..." : "打开 Chat 界面"}
                 </button>
                 <button
                   onClick={() => doAction("restart")}

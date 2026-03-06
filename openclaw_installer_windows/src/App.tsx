@@ -26,6 +26,7 @@ export default function App() {
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>("checking");
   const [cliCaps, setCliCaps] = useState<CliCapabilities | null>(null);
   const [envEstimate, setEnvEstimate] = useState<EnvEstimate | null>(null);
+  const [loadingSec, setLoadingSec] = useState(0);
 
   const addLog = (level: LogEntry["level"], message: string) => {
     setLogs((prev) => [
@@ -50,13 +51,18 @@ export default function App() {
       }
     );
 
-    // 智能检测环境 + CLI 能力探测
-    Promise.all([
-      invoke<CheckEnvironmentResult>("check_environment"),
-      invoke<CliCapabilities>("detect_cli_capabilities").catch(() => null),
-    ])
-      .then(async ([env, caps]) => {
-        if (caps) setCliCaps(caps);
+    const withTimeout = async <T,>(promise: Promise<T>, ms: number): Promise<T> => {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) =>
+          setTimeout(() => reject(new Error("timeout")), ms)
+        ),
+      ]);
+    };
+
+    // 先做环境检测（带超时），避免 loading 卡死
+    withTimeout(invoke<CheckEnvironmentResult>("check_environment"), 8000)
+      .then(async (env) => {
         setEnvEstimate({
           node_installed: env.node_installed,
           openclaw_installed: env.openclaw_installed,
@@ -112,12 +118,27 @@ export default function App() {
           setWizardStep("syscheck");
         }
       })
-      .catch(() => setView("wizard"));
+      .catch(() => {
+        // 超时或异常时，至少让用户进入向导，不阻塞在 loading
+        setView("wizard");
+        setWizardStep("syscheck");
+      });
+
+    // CLI 能力探测改为后台异步，不阻塞首屏
+    withTimeout(invoke<CliCapabilities>("detect_cli_capabilities"), 5000)
+      .then((caps) => setCliCaps(caps))
+      .catch(() => setCliCaps(null));
 
     return () => {
       unlistenLog.then((f) => f());
     };
   }, []);
+
+  useEffect(() => {
+    if (view !== "loading") return;
+    const timer = setInterval(() => setLoadingSec((s) => s + 1), 1000);
+    return () => clearInterval(timer);
+  }, [view]);
 
   const handleSysCheckDone = (installDir: string) => {
     setManifest((prev) => ({ ...(prev as AppManifest), install_dir: installDir }));
@@ -151,7 +172,18 @@ export default function App() {
       <div className="h-screen flex items-center justify-center bg-gray-950">
         <div className="flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-2 border-brand-400 border-t-transparent rounded-full animate-spin" />
-          <span className="text-gray-400 text-sm">正在加载...</span>
+          <span className="text-gray-400 text-sm">正在初始化环境...（{loadingSec}s）</span>
+          {loadingSec >= 12 && (
+            <button
+              onClick={() => {
+                setView("wizard");
+                setWizardStep("syscheck");
+              }}
+              className="px-3 py-1.5 text-xs text-gray-300 bg-gray-800 hover:bg-gray-700 rounded-md transition-colors"
+            >
+              等待过久？先进入安装向导
+            </button>
+          )}
         </div>
       </div>
     );

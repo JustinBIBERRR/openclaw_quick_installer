@@ -366,7 +366,7 @@ fn check_node_installed() -> bool {
 pub fn check_environment() -> CheckEnvironmentResult {
     refresh_path();
     let node_installed = check_node_installed();
-    let openclaw_installed = find_openclaw_cmd().is_some();
+    let openclaw_installed = find_openclaw_cmd_fast().is_some();
 
     let config_exists = openclaw_config_dir()
         .ok()
@@ -876,6 +876,25 @@ fn find_openclaw_cmd() -> Option<PathBuf> {
         }
     }
 
+    None
+}
+
+/// 快速检测 openclaw（仅 PATH + APPDATA\npm，不调用 npm）
+fn find_openclaw_cmd_fast() -> Option<PathBuf> {
+    let machine_path = std::env::var("PATH").unwrap_or_default();
+    let appdata = std::env::var("APPDATA").unwrap_or_default();
+    let extra_npm = format!("{}\\npm", appdata);
+    let search_path = format!("{};{}", machine_path, extra_npm);
+
+    for dir in search_path.split(';') {
+        if dir.trim().is_empty() {
+            continue;
+        }
+        let candidate = PathBuf::from(dir).join("openclaw.cmd");
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
     None
 }
 
