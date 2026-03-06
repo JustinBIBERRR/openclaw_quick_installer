@@ -634,8 +634,34 @@ fn build_openclaw_config(
         "deepseek" => "deepseek",
         _ => "openai",
     };
+
+    let primary_model = format!("{}/{}", provider_id, model);
+
+    let profile = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".into());
+    let workspace = format!("{}/.openclaw/workspace", profile.replace('\\', "/"));
+
     serde_json::json!({
+        "identity": {
+            "name": "Clawd",
+            "theme": "helpful assistant",
+            "emoji": "\u{1F99E}"
+        },
+        "agent": {
+            "workspace": workspace,
+            "model": {
+                "primary": primary_model
+            }
+        },
+        "gateway": {
+            "mode": "local",
+            "port": 18789,
+            "bind": "loopback",
+            "auth": {
+                "mode": "none"
+            }
+        },
         "models": {
+            "mode": "merge",
             "providers": {
                 provider_id: {
                     "apiKey": api_key,
