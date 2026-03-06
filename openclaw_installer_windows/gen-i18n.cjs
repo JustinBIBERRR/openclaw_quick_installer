@@ -74,9 +74,6 @@ export default function SysCheck({ onDone }: Props) {
 
   useEffect(() => {
     async function init() {
-      // #region agent log
-      fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:init',message:'init called',data:{isTauri,hasInternals:'__TAURI_INTERNALS__' in window,hasLegacy:'__TAURI__' in window},timestamp:Date.now(),runId:'post-fix',hypothesisId:'A'})}).catch(()=>{});
-      // #endregion
       if (!isTauri) {
         const fallback = "C:\\\\OpenClaw";
         setInstallDir(fallback);
@@ -85,15 +82,9 @@ export default function SysCheck({ onDone }: Props) {
       }
       try {
         const dir = await invoke<string>("get_default_install_dir");
-        // #region agent log
-        fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:invoke-ok',message:'get_default_install_dir OK',data:{dir},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
-        // #endregion
         setInstallDir(dir);
         runChecks(dir);
       } catch(err) {
-        // #region agent log
-        fetch('http://127.0.0.1:7244/ingest/45c66ef1-757e-4e07-980b-ef06c6e8c939',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({location:'SysCheck.tsx:invoke-err',message:'get_default_install_dir FAILED',data:{err:String(err)},timestamp:Date.now(),hypothesisId:'C'})}).catch(()=>{});
-        // #endregion
         const fallback = "C:\\\\OpenClaw";
         setInstallDir(fallback);
         runChecks(fallback);

@@ -171,6 +171,11 @@ export default function Installing({ manifest, envEstimate, logs, addLog, onDone
           <span className="text-xs text-gray-500 font-medium uppercase tracking-wide">安装日志</span>
           <span className="text-xs text-gray-600">{logs.length} 行</span>
         </div>
+        {isTauri && phase === "running" && (
+          <p className="text-xs text-gray-500 mb-2">
+            已打开安装窗口，请在弹出的 PowerShell 窗口中查看实时进度。
+          </p>
+        )}
         <LogScroller logs={logs} maxHeight="h-full min-h-[150px]" />
       </div>
 

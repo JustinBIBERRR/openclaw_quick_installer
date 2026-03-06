@@ -72,6 +72,13 @@ pub struct ValidateResult {
     pub message: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct AdminRelaunchResult {
+    pub launched: bool,
+    pub close_current: bool,
+    pub message: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct CheckEnvironmentResult {
     pub node_installed: bool,
@@ -156,6 +163,23 @@ pub struct CliCapabilities {
     pub onboarding_flags: Vec<String>,
     pub doctor_flags: Vec<String>,
     pub gateway_flags: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SavedApiConfig {
+    pub provider: String,
+    pub api_key: String,
+    pub base_url: String,
+    pub model: String,
+}
+
+#[derive(Debug, Clone)]
+struct OnboardingPrefs {
+    install_daemon: bool,
+    channel: Option<String>,
+    install_skills: bool,
+    install_hooks: bool,
+    launch_mode: Option<String>,
 }
 
 // ─── 嵌入 PowerShell 脚本（编译时内嵌，运行时写入临时目录）─────────────────
@@ -309,27 +333,143 @@ fn run_ps_script_streaming_sync(
     let result = stdout_handle.join().unwrap_or_default();
     let status = child.wait().map_err(|e| format!("等待进程失败: {e}"))?;
 
-    // #region agent log
-    {
-        use std::io::Write as _;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
-            r"d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
-        ) {
-            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-            let _ = writeln!(f, "{{\"location\":\"commands.rs:run_ps_done\",\"message\":\"script finished\",\"data\":{{\"exit_code\":{},\"result_len\":{},\"result_preview\":\"{}\",\"event\":\"{}\"}},\"timestamp\":{},\"runId\":\"post-fix\",\"hypothesisId\":\"F\"}}",
-                status.code().unwrap_or(-999),
-                result.len(),
-                result.chars().take(100).collect::<String>().replace('\\', "\\\\").replace('"', "\\\""),
-                event_name,
-                ts);
-        }
-    }
-    // #endregion
-
     if !status.success() && result.is_empty() {
         return Err(format!("脚本退出码: {}", status.code().unwrap_or(-1)));
     }
     Ok(result)
+}
+
+/// 运行可见的 PowerShell 安装窗口，通过结果文件回传安装结果
+fn run_install_visible_sync(
+    window: Window,
+    script_path: PathBuf,
+    env_pairs: Vec<(String, String)>,
+    event_name: &str,
+    result_file: PathBuf,
+) -> Result<(), String> {
+    let invoke_expr = format!(
+        "& ([scriptblock]::Create([System.IO.File]::ReadAllText('{}')))",
+        script_path.to_string_lossy().replace('\'', "''")
+    );
+
+    let install_dir = env_pairs
+        .iter()
+        .find(|(k, _)| k == "OPENCLAW_INSTALL_DIR")
+        .map(|(_, v)| v.clone());
+
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-Command", &invoke_expr]);
+    for (k, v) in &env_pairs {
+        cmd.env(k, v);
+    }
+    cmd.env(
+        "OPENCLAW_RESULT_FILE",
+        result_file.to_string_lossy().to_string(),
+    );
+    cmd.stdin(Stdio::null());
+
+    let t_spawn = std::time::Instant::now();
+
+    let emit_log = |level: &str, msg: &str| {
+        window
+            .emit(
+                event_name,
+                serde_json::json!({ "level": level, "message": msg }),
+            )
+            .ok();
+    };
+
+    emit_log("info", "正在启动安装窗口（PowerShell）...");
+
+    let mut child = cmd.spawn().map_err(|e| {
+        let msg = format!("启动 PowerShell 失败: {e}");
+        emit_log("error", &msg);
+        msg
+    })?;
+
+    let pid = child.id();
+    emit_log(
+        "info",
+        &format!(
+            "安装进程已启动 (PID: {})，请在弹出的 PowerShell 窗口中查看实时进度",
+            pid
+        ),
+    );
+
+    let mut heartbeat: u32 = 0;
+    loop {
+        match child
+            .try_wait()
+            .map_err(|e| format!("查询安装进程状态失败: {e}"))?
+        {
+            Some(status) => {
+                let elapsed = t_spawn.elapsed().as_secs();
+                let result = std::fs::read_to_string(&result_file)
+                    .unwrap_or_default()
+                    .trim()
+                    .trim_start_matches('\u{feff}') // strip UTF-8 BOM if present
+                    .to_string();
+                let _ = std::fs::remove_file(&result_file);
+
+                let exit_code = status.code().unwrap_or(-1);
+                emit_log(
+                    "dim",
+                    &format!(
+                        "安装进程已退出 (PID: {}, 退出码: {}, 耗时: {}s, 结果: {})",
+                        pid,
+                        exit_code,
+                        elapsed,
+                        if result.is_empty() { "(空)" } else { &result }
+                    ),
+                );
+
+                if !status.success() && result.is_empty() {
+                    let msg = format!("安装脚本退出码: {exit_code}，未写入结果文件");
+                    emit_log("error", &msg);
+                    return Err(msg);
+                }
+                if let Some(err_msg) = result.strip_prefix("error:") {
+                    let msg = err_msg.trim().to_string();
+                    emit_log("error", &format!("安装失败: {msg}"));
+                    return Err(msg);
+                }
+                if result != "install_ok" {
+                    let msg = format!(
+                        "安装未返回成功状态（收到: '{result}'），请检查 PowerShell 窗口输出"
+                    );
+                    emit_log("error", &msg);
+                    return Err(msg);
+                }
+                if let Some(dir) = install_dir.as_ref() {
+                    let info_path = Path::new(dir).join("install-info.json");
+                    if let Ok(info_raw) = std::fs::read_to_string(&info_path) {
+                        if let Ok(info_json) = serde_json::from_str::<serde_json::Value>(&info_raw) {
+                            if info_json
+                                .get("existing_openclaw")
+                                .and_then(|v| v.as_bool())
+                                .unwrap_or(false)
+                            {
+                                emit_log("info", "检测到已安装 OpenClaw，本次已跳过 CLI 安装步骤");
+                            }
+                        }
+                    }
+                }
+                emit_log("ok", &format!("安装成功 (耗时: {elapsed}s)"));
+                return Ok(());
+            }
+            None => {
+                heartbeat += 1;
+                let elapsed = t_spawn.elapsed().as_secs();
+                emit_log(
+                    "dim",
+                    &format!(
+                        "安装进行中... (已等待 {elapsed}s，心跳 #{heartbeat}，请查看 PowerShell 窗口)"
+                    ),
+                );
+                std::thread::sleep(Duration::from_secs(5));
+            }
+        }
+    }
 }
 
 // ─── Tauri 命令 ───────────────────────────────────────────────────────────
@@ -502,20 +642,6 @@ fn find_free_port(start: u16) -> u16 {
 fn default_install_dir_inner() -> String {
     let local_res = std::env::var("LOCALAPPDATA");
     let profile_res = std::env::var("USERPROFILE");
-    // #region agent log
-    {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
-            r"d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
-        ) {
-            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-            let local_val = local_res.as_deref().unwrap_or("ERR");
-            let profile_val = profile_res.as_deref().unwrap_or("ERR");
-            let _ = writeln!(f, "{{\"location\":\"commands.rs:default_install_dir_inner\",\"message\":\"env vars\",\"data\":{{\"LOCALAPPDATA\":\"{}\",\"USERPROFILE\":\"{}\"}},\"timestamp\":{},\"hypothesisId\":\"D\"}}",
-                local_val, profile_val, ts);
-        }
-    }
-    // #endregion
     if let Ok(local) = local_res {
         return format!("{}\\OpenClaw", local);
     }
@@ -552,7 +678,7 @@ fn check_network_sync() -> bool {
     ).is_ok()
 }
 
-/// 安装 OpenClaw（winget/msi 安装 Node.js + npm install -g openclaw）
+/// 安装 OpenClaw（可见 PowerShell：Git + nvm-cn + openclaw 官方脚本）
 #[tauri::command]
 pub async fn start_install(
     window: Window,
@@ -560,20 +686,6 @@ pub async fn start_install(
     install_dir: String,
 ) -> Result<CommandResult, String> {
     let script = get_script_path(&app, "install.ps1")?;
-
-    // #region agent log
-    {
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(
-            r"d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
-        ) {
-            let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis();
-            let _ = writeln!(f, "{{\"location\":\"commands.rs:start_install\",\"message\":\"paths\",\"data\":{{\"script\":\"{}\"}},\"timestamp\":{},\"runId\":\"post-fix\",\"hypothesisId\":\"E\"}}",
-                script.display().to_string().replace('\\', "\\\\"),
-                ts);
-        }
-    }
-    // #endregion
 
     window.emit("install-log", serde_json::json!({
         "level": "dim",
@@ -592,9 +704,16 @@ pub async fn start_install(
     let env_pairs = vec![
         ("OPENCLAW_INSTALL_DIR".to_string(), install_dir.clone()),
     ];
+    let result_file = std::env::temp_dir().join(format!(
+        "openclaw_result_{}.txt",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    ));
 
     let install_result = tokio::task::spawn_blocking(move || {
-        run_ps_script_streaming_sync(window, script, env_pairs, "install-log")
+        run_install_visible_sync(window, script, env_pairs, "install-log", result_file)
     })
     .await
     .map_err(|e| e.to_string());
@@ -610,30 +729,7 @@ pub async fn start_install(
     }
 
     if let Err(script_err) = install_result.unwrap() {
-        let npm_err_path = Path::new(&install_dir).join("logs").join("npm-install-err.log");
-        let npm_err = std::fs::read_to_string(&npm_err_path).unwrap_or_default();
-        let npm_err_lower = npm_err.to_lowercase();
-
-        let (code, message, hint) = if npm_err_lower.contains("eacces")
-            || npm_err_lower.contains("eperm")
-            || npm_err_lower.contains("permission denied")
-        {
-            (
-                "NPM_PERMISSION_DENIED",
-                "OpenClaw CLI 安装失败（npm 权限不足）".to_string(),
-                Some("请使用管理员权限运行安装器后重试；若仍失败，请先手动安装 Node.js 再重试".to_string()),
-            )
-        } else if npm_err_lower.contains("enotfound")
-            || npm_err_lower.contains("econnreset")
-            || npm_err_lower.contains("etimedout")
-            || npm_err_lower.contains("network")
-        {
-            (
-                "NPM_NETWORK_ERROR",
-                "OpenClaw CLI 安装失败（网络问题）".to_string(),
-                Some("请检查网络/代理后重试；必要时可先手动安装 Node.js".to_string()),
-            )
-        } else if !check_node_installed() {
+        let (code, message, hint) = if !check_node_installed() {
             (
                 "NODE_RUNTIME_NOT_READY",
                 "Node.js 安装或识别失败".to_string(),
@@ -649,7 +745,7 @@ pub async fn start_install(
             (
                 "INSTALL_SCRIPT_FAILED",
                 script_err.clone(),
-                Some("请检查安装日志后重试".to_string()),
+                Some("请查看 PowerShell 安装窗口中的报错并重试".to_string()),
             )
         };
 
@@ -663,7 +759,7 @@ pub async fn start_install(
             log_path: Some(Path::new(&install_dir).join("logs").to_string_lossy().into_owned()),
             retriable: true,
             stdout: None,
-            stderr: if npm_err.is_empty() { None } else { Some(npm_err) },
+            stderr: Some(script_err),
         });
     }
 
@@ -761,6 +857,215 @@ fn openclaw_config_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+fn read_saved_api_config() -> Option<SavedApiConfig> {
+    let config_dir = openclaw_config_dir().ok()?;
+    let config_path = config_dir.join("openclaw.json");
+    let raw = std::fs::read_to_string(config_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let providers = json
+        .get("models")
+        .and_then(|v| v.get("providers"))
+        .and_then(|v| v.as_object())?;
+
+    let preferred = ["anthropic", "openai", "deepseek"];
+    let chosen = preferred
+        .iter()
+        .find_map(|k| providers.get(*k).map(|v| ((*k).to_string(), v)))
+        .or_else(|| providers.iter().next().map(|(k, v)| (k.clone(), v)))?;
+
+    let provider_key = chosen.0;
+    let entry = chosen.1;
+    let api_key = entry
+        .get("apiKey")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if api_key.trim().is_empty() {
+        return None;
+    }
+
+    let base_url = entry
+        .get("baseUrl")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+
+    let model = entry
+        .get("models")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|m| {
+            m.get("id")
+                .and_then(|v| v.as_str())
+                .or_else(|| m.get("name").and_then(|v| v.as_str()))
+        })
+        .unwrap_or("")
+        .to_string();
+
+    let provider = match provider_key.as_str() {
+        "anthropic" => "anthropic".to_string(),
+        "openai" => "openai".to_string(),
+        "deepseek" => "deepseek".to_string(),
+        _ => "custom".to_string(),
+    };
+
+    Some(SavedApiConfig {
+        provider,
+        api_key,
+        base_url,
+        model,
+    })
+}
+
+#[tauri::command]
+pub fn get_saved_api_config() -> Option<SavedApiConfig> {
+    read_saved_api_config()
+}
+
+fn normalize_auth_provider(provider: &str) -> &'static str {
+    match provider {
+        "anthropic" => "anthropic",
+        "openai" => "openai",
+        // deepseek/custom 通常走 OpenAI 兼容协议，写入 openai profile 最稳妥
+        "deepseek" | "custom" => "openai",
+        _ => "openai",
+    }
+}
+
+fn normalize_model_provider(provider: &str) -> &'static str {
+    match provider {
+        "anthropic" => "anthropic",
+        "openai" => "openai",
+        "deepseek" => "deepseek",
+        "custom" => "openai",
+        _ => "openai",
+    }
+}
+
+/// 将 API Key 写入 OpenClaw auth-profiles，并同步到 main agent 目录
+fn sync_agent_auth_profile(provider: &str, api_key: &str) -> Result<(), String> {
+    let key = api_key.trim();
+    if key.is_empty() {
+        return Ok(());
+    }
+    refresh_path();
+    let oc_cmd = find_openclaw_cmd().ok_or_else(|| "找不到 openclaw 命令".to_string())?;
+    let provider_id = normalize_auth_provider(provider);
+
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/c", &oc_cmd.to_string_lossy(), "models", "auth", "paste-token", "--provider", provider_id])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    no_window!(cmd);
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("写入 auth token 失败（启动命令失败）: {e}"))?;
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write as _;
+        stdin
+            .write_all(key.as_bytes())
+            .map_err(|e| format!("写入 auth token 失败（stdin）: {e}"))?;
+        stdin
+            .write_all(b"\n")
+            .map_err(|e| format!("写入 auth token 换行失败: {e}"))?;
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("等待 auth token 命令失败: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let detail = stderr.lines().last().unwrap_or("").trim();
+        let fallback = stdout.lines().last().unwrap_or("").trim();
+        let msg = if !detail.is_empty() { detail } else { fallback };
+        return Err(format!(
+            "写入 auth-profiles 失败: {}",
+            if msg.is_empty() { "未知错误" } else { msg }
+        ));
+    }
+
+    // 兼容某些版本仅写入根目录 auth-profiles，手动同步到 main agent 目录
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        let root_auth = PathBuf::from(&profile).join(".openclaw").join("auth-profiles.json");
+        let agent_auth = PathBuf::from(&profile)
+            .join(".openclaw")
+            .join("agents")
+            .join("main")
+            .join("agent")
+            .join("auth-profiles.json");
+        if root_auth.exists() {
+            if let Some(parent) = agent_auth.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let _ = std::fs::copy(&root_auth, &agent_auth);
+        }
+    }
+    if !agent_auth_profile_exists() {
+        return Err("auth 命令执行成功但未生成 auth-profiles.json".into());
+    }
+    Ok(())
+}
+
+fn agent_auth_profile_exists() -> bool {
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        let root_auth = PathBuf::from(&profile).join(".openclaw").join("auth-profiles.json");
+        let agent_auth = PathBuf::from(&profile)
+            .join(".openclaw")
+            .join("agents")
+            .join("main")
+            .join("agent")
+            .join("auth-profiles.json");
+        return root_auth.exists() || agent_auth.exists();
+    }
+    false
+}
+
+fn get_active_model_status_plain() -> Option<String> {
+    let mut result = run_openclaw_cmd(&["models", "status", "--plain"]);
+    if !result.success {
+        result = run_openclaw_cmd(&["models", "status"]);
+    }
+    result.stdout.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+}
+
+fn ensure_default_model(provider: &str, model: &str) -> Result<(), String> {
+    let m = model.trim();
+    if m.is_empty() {
+        return Ok(());
+    }
+    let provider_id = normalize_model_provider(provider);
+    let mut candidates: Vec<String> = Vec::new();
+    if m.contains('/') {
+        candidates.push(m.to_string());
+    } else {
+        candidates.push(format!("{provider_id}/{m}"));
+        candidates.push(m.to_string());
+    }
+    candidates.dedup();
+
+    let mut last_err = String::new();
+    for candidate in &candidates {
+        let set_result = run_openclaw_cmd(&["models", "set", candidate]);
+        if !set_result.success {
+            last_err = set_result.message;
+            continue;
+        }
+        let after = get_active_model_status_plain().unwrap_or_default();
+        if after.eq_ignore_ascii_case(candidate) {
+            return Ok(());
+        }
+        last_err = format!("设置为 {candidate} 后状态仍为 {after}");
+    }
+    if last_err.is_empty() {
+        last_err = "未找到可用模型候选".into();
+    }
+    Err(last_err)
+}
+
 /// 保存 API Key 配置（写到 ~/.openclaw/openclaw.json，与 openclaw 官方一致）
 #[tauri::command]
 pub fn save_api_key(
@@ -812,6 +1117,39 @@ pub fn save_api_key(
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(&config_path, json)
         .map_err(|e| format!("写入配置失败: {e}"))?;
+
+    if provider != "skip" && !api_key.trim().is_empty() {
+        if let Err(e) = sync_agent_auth_profile(&provider, &api_key) {
+            return Ok(CommandResult {
+                success: false,
+                code: "AUTH_PROFILE_SYNC_FAILED".into(),
+                message: "API Key 已保存，但 Agent 认证写入失败".into(),
+                hint: Some(e),
+                command: "save_api_key".into(),
+                exit_code: Some(1),
+                log_path: Some(config_path.to_string_lossy().into_owned()),
+                retriable: true,
+                stdout: None,
+                stderr: None,
+            });
+        }
+    }
+    if provider != "skip" && !model.trim().is_empty() {
+        if let Err(e) = ensure_default_model(&provider, &model) {
+            return Ok(CommandResult {
+                success: false,
+                code: "SET_DEFAULT_MODEL_FAILED".into(),
+                message: "API Key 已保存，但设置默认模型失败".into(),
+                hint: Some(e),
+                command: "save_api_key".into(),
+                exit_code: Some(1),
+                log_path: Some(config_path.to_string_lossy().into_owned()),
+                retriable: true,
+                stdout: None,
+                stderr: None,
+            });
+        }
+    }
 
     manifest.api_provider = provider;
     manifest.api_key_configured = true;
@@ -1113,7 +1451,7 @@ pub fn detect_cli_capabilities() -> CliCapabilities {
             .unwrap_or_default()
     };
 
-    let has_onboarding = help_output.contains("onboarding");
+    let has_onboarding = help_output.contains("onboard") || help_output.contains("onboarding");
     let has_doctor = help_output.contains("doctor");
     let has_gateway = help_output.contains("gateway");
     let has_dashboard = help_output.contains("dashboard");
@@ -1150,7 +1488,10 @@ pub fn detect_cli_capabilities() -> CliCapabilities {
         has_doctor,
         has_gateway,
         has_dashboard,
-        onboarding_flags: if has_onboarding { get_subcommand_flags("onboarding") } else { vec![] },
+        onboarding_flags: if has_onboarding {
+            let flags = get_subcommand_flags("onboard");
+            if flags.is_empty() { get_subcommand_flags("onboarding") } else { flags }
+        } else { vec![] },
         doctor_flags: if has_doctor { get_subcommand_flags("doctor") } else { vec![] },
         gateway_flags: if has_gateway { get_subcommand_flags("gateway") } else { vec![] },
     }
@@ -1217,8 +1558,80 @@ pub async fn run_doctor_fix() -> CommandResult {
 /// 运行 openclaw onboarding（非交互模式，跳过高级配置）
 #[tauri::command]
 pub async fn run_onboarding(api_key: String, provider: String) -> CommandResult {
+    run_onboarding_impl(
+        api_key,
+        provider,
+        None,
+        None,
+        OnboardingPrefs {
+            install_daemon: true,
+            channel: None,
+            install_skills: false,
+            install_hooks: false,
+            launch_mode: Some("web".into()),
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn run_onboarding_with_model(api_key: String, provider: String, base_url: Option<String>, model: Option<String>) -> CommandResult {
+    run_onboarding_impl(
+        api_key,
+        provider,
+        base_url,
+        model,
+        OnboardingPrefs {
+            install_daemon: true,
+            channel: None,
+            install_skills: false,
+            install_hooks: false,
+            launch_mode: Some("web".into()),
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn run_onboarding_guided(
+    api_key: String,
+    provider: String,
+    base_url: Option<String>,
+    model: Option<String>,
+    install_daemon: bool,
+    channel: Option<String>,
+    install_skills: bool,
+    install_hooks: bool,
+    launch_mode: Option<String>,
+) -> CommandResult {
+    run_onboarding_impl(
+        api_key,
+        provider,
+        base_url,
+        model,
+        OnboardingPrefs {
+            install_daemon,
+            channel,
+            install_skills,
+            install_hooks,
+            launch_mode,
+        },
+    )
+    .await
+}
+
+async fn run_onboarding_impl(
+    api_key: String,
+    provider: String,
+    base_url: Option<String>,
+    model: Option<String>,
+    prefs: OnboardingPrefs,
+) -> CommandResult {
     let provider_arg = provider.clone();
     let key_arg = api_key.clone();
+    let base_url_arg = base_url.clone();
+    let model_arg = model.clone();
+    let prefs_arg = prefs.clone();
     
     tokio::task::spawn_blocking(move || {
         // 检测是否支持非交互 flags
@@ -1230,41 +1643,227 @@ pub async fn run_onboarding(api_key: String, provider: String) -> CommandResult 
             };
             
             let mut cmd = Command::new("cmd");
-            cmd.args(["/c", &oc_cmd.to_string_lossy(), "onboarding", "--help"])
+            cmd.args(["/c", &oc_cmd.to_string_lossy(), "onboard", "--help"])
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped());
             no_window!(cmd);
             cmd.output()
-                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .map(|o| format!("{}\n{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
                 .unwrap_or_default()
         };
+        let caps_lower = caps.to_lowercase();
+        let has_flag = |flag: &str| caps_lower.contains(&flag.to_lowercase());
+        let mut skipped_items: Vec<String> = Vec::new();
 
         // 根据可用 flags 构建命令
-        let mut args: Vec<&str> = vec!["onboarding"];
+        let mut args: Vec<String> = vec!["onboard".into()];
         
         // 常见的非交互 flags
-        if caps.contains("--non-interactive") || caps.contains("non-interactive") {
-            args.push("--non-interactive");
+        if has_flag("--non-interactive") || has_flag("non-interactive") {
+            args.push("--non-interactive".into());
         }
-        if caps.contains("--skip-skills") {
-            args.push("--skip-skills");
+        if has_flag("--accept-risk") {
+            args.push("--accept-risk".into());
         }
-        if caps.contains("--skip-integrations") {
-            args.push("--skip-integrations");
+        if has_flag("--flow") {
+            args.push("--flow".into());
+            args.push("quickstart".into());
         }
-        
-        // 如果支持直接传入 provider 和 key
-        let provider_flag = format!("--provider={}", provider_arg);
-        let key_flag = format!("--api-key={}", key_arg);
-        
-        if caps.contains("--provider") {
-            args.push(&provider_flag);
+        if has_flag("--mode") {
+            args.push("--mode".into());
+            args.push("local".into());
         }
-        if caps.contains("--api-key") {
-            args.push(&key_flag);
+        if has_flag("--gateway-bind") {
+            args.push("--gateway-bind".into());
+            args.push("loopback".into());
+        }
+        if has_flag("--gateway-port") {
+            args.push("--gateway-port".into());
+            args.push("18789".into());
+        }
+        if has_flag("--skip-channels") {
+            args.push("--skip-channels".into());
+        }
+        if prefs_arg.install_skills {
+            if has_flag("--install-skills") {
+                args.push("--install-skills".into());
+            } else {
+                skipped_items.push("skills".into());
+            }
+        } else if has_flag("--skip-skills") {
+            args.push("--skip-skills".into());
+        }
+        if prefs_arg.install_hooks {
+            if has_flag("--install-hooks") {
+                args.push("--install-hooks".into());
+            } else {
+                skipped_items.push("hooks".into());
+            }
+        } else if has_flag("--skip-hooks") {
+            args.push("--skip-hooks".into());
         }
 
-        run_openclaw_cmd(&args)
+        if prefs_arg.install_daemon {
+            if has_flag("--install-daemon") {
+                args.push("--install-daemon".into());
+            }
+        } else if has_flag("--skip-daemon") {
+            args.push("--skip-daemon".into());
+        } else if has_flag("--no-install-daemon") {
+            args.push("--no-install-daemon".into());
+        }
+
+        if let Some(channel) = prefs_arg.channel.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            if has_flag("--channel") {
+                args.push("--channel".into());
+                args.push(channel.to_string());
+            } else if has_flag("--channels") {
+                args.push("--channels".into());
+                args.push(channel.to_string());
+            } else {
+                skipped_items.push("channel".into());
+            }
+        }
+
+        if let Some(mode) = prefs_arg.launch_mode.as_deref() {
+            match mode {
+                "web" => {
+                    if has_flag("--ui") {
+                        args.push("--ui".into());
+                        args.push("web".into());
+                    } else if has_flag("--web") {
+                        args.push("--web".into());
+                    } else {
+                        skipped_items.push("launch_mode:web".into());
+                    }
+                }
+                "tui" => {
+                    if has_flag("--ui") {
+                        args.push("--ui".into());
+                        args.push("tui".into());
+                    } else if has_flag("--tui") {
+                        args.push("--tui".into());
+                    } else {
+                        skipped_items.push("launch_mode:tui".into());
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        match provider_arg.as_str() {
+            "anthropic" => {
+                if has_flag("--auth-choice") {
+                    args.push("--auth-choice".into());
+                    args.push("anthropic-api-key".into());
+                }
+                if !key_arg.is_empty() && has_flag("--anthropic-api-key") {
+                    args.push("--anthropic-api-key".into());
+                    args.push(key_arg.clone());
+                } else if key_arg.is_empty() {
+                    skipped_items.push("anthropic_api_key".into());
+                }
+            }
+            "openai" => {
+                if has_flag("--auth-choice") {
+                    args.push("--auth-choice".into());
+                    args.push("openai-api-key".into());
+                }
+                if !key_arg.is_empty() && has_flag("--openai-api-key") {
+                    args.push("--openai-api-key".into());
+                    args.push(key_arg.clone());
+                } else if key_arg.is_empty() {
+                    skipped_items.push("openai_api_key".into());
+                }
+            }
+            "deepseek" => {
+                if has_flag("--auth-choice") {
+                    args.push("--auth-choice".into());
+                    args.push("custom-api-key".into());
+                }
+                if !key_arg.is_empty() && has_flag("--custom-api-key") {
+                    args.push("--custom-api-key".into());
+                    args.push(key_arg.clone());
+                } else if key_arg.is_empty() {
+                    skipped_items.push("deepseek_api_key".into());
+                }
+                if has_flag("--custom-base-url") {
+                    args.push("--custom-base-url".into());
+                    args.push(base_url_arg.clone().unwrap_or_else(|| "https://api.deepseek.com/v1".into()));
+                }
+                if has_flag("--custom-model-id") {
+                    args.push("--custom-model-id".into());
+                    args.push(model_arg.clone().unwrap_or_else(|| "deepseek-chat".into()));
+                }
+                if has_flag("--custom-provider-id") {
+                    args.push("--custom-provider-id".into());
+                    args.push("deepseek".into());
+                }
+                if has_flag("--custom-compatibility") {
+                    args.push("--custom-compatibility".into());
+                    args.push("openai".into());
+                }
+            }
+            _ => {
+                if has_flag("--auth-choice") {
+                    args.push("--auth-choice".into());
+                    args.push("custom-api-key".into());
+                }
+                if !key_arg.is_empty() && has_flag("--custom-api-key") {
+                    args.push("--custom-api-key".into());
+                    args.push(key_arg.clone());
+                } else if key_arg.is_empty() {
+                    skipped_items.push("custom_api_key".into());
+                }
+                if has_flag("--custom-base-url") {
+                    args.push("--custom-base-url".into());
+                    args.push(base_url_arg.clone().unwrap_or_default());
+                }
+                if has_flag("--custom-model-id") {
+                    args.push("--custom-model-id".into());
+                    args.push(model_arg.clone().unwrap_or_default());
+                }
+                if has_flag("--custom-provider-id") {
+                    args.push("--custom-provider-id".into());
+                    args.push("custom".into());
+                }
+                if has_flag("--custom-compatibility") {
+                    args.push("--custom-compatibility".into());
+                    args.push("openai".into());
+                }
+            }
+        }
+
+        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+
+        let mut result = run_openclaw_cmd(&arg_refs);
+        if result.success && !skipped_items.is_empty() {
+            let skipped_text = skipped_items.join(", ");
+            result.hint = Some(format!("已按 best-effort 跳过不支持项: {skipped_text}"));
+        }
+        if result.success && !key_arg.trim().is_empty() {
+            if let Err(e) = sync_agent_auth_profile(&provider_arg, &key_arg) {
+                let prev = result.hint.unwrap_or_default();
+                result.hint = Some(if prev.is_empty() {
+                    format!("onboard 完成，但自动写入 Agent 认证失败：{e}")
+                } else {
+                    format!("{prev}；另外自动写入 Agent 认证失败：{e}")
+                });
+            }
+        }
+        if result.success {
+            if let Some(model_name) = model_arg.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                if let Err(e) = ensure_default_model(&provider_arg, model_name) {
+                    let prev = result.hint.unwrap_or_default();
+                    result.hint = Some(if prev.is_empty() {
+                        format!("onboard 完成，但设置默认模型失败：{e}")
+                    } else {
+                        format!("{prev}；另外设置默认模型失败：{e}")
+                    });
+                }
+            }
+        }
+        result
     }).await.unwrap_or_else(|_| CommandResult::error("onboarding", "TASK_ERROR", "任务执行失败", None, true))
 }
 
@@ -1281,24 +1880,63 @@ pub async fn run_gateway_start(window: Window, install_dir: String, port: u16) -
     let install_dir_for_manifest = install_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         refresh_path();
+        let mut preflight_hint: Option<String> = None;
+        let userprofile = std::env::var("USERPROFILE").ok();
+        let user_openclaw = userprofile.as_ref().map(|p| PathBuf::from(p).join(".openclaw"));
+        let gateway_cwd = user_openclaw.clone().filter(|p| p.exists());
         
         let oc_cmd = match find_openclaw_cmd() {
             Some(c) => c,
             None => return CommandResult::error("gateway", "CMD_NOT_FOUND", "找不到 openclaw 命令", None, true),
         };
 
-        // 检查是否已在运行
-        if tcp_port_open(port) {
-            return CommandResult::ok("gateway", &format!("Gateway 已在运行 (port {})", port));
+        if !agent_auth_profile_exists() {
+            if let Some(saved) = read_saved_api_config() {
+                if !saved.api_key.trim().is_empty() {
+                    match sync_agent_auth_profile(&saved.provider, &saved.api_key) {
+                        Ok(_) => {
+                            preflight_hint = Some("启动前已自动补齐 Agent 认证信息".into());
+                        }
+                        Err(e) => {
+                            preflight_hint = Some(format!("启动前尝试自动补齐 Agent 认证失败：{e}"));
+                        }
+                    }
+                }
+                if !saved.model.trim().is_empty() {
+                    match ensure_default_model(&saved.provider, &saved.model) {
+                        Ok(_) => {
+                            let prev = preflight_hint.unwrap_or_default();
+                            preflight_hint = Some(if prev.is_empty() {
+                                format!("已设置默认模型为 {}", saved.model)
+                            } else {
+                                format!("{prev}；已设置默认模型为 {}", saved.model)
+                            });
+                        }
+                        Err(e) => {
+                            let prev = preflight_hint.unwrap_or_default();
+                            preflight_hint = Some(if prev.is_empty() {
+                                format!("设置默认模型失败：{e}")
+                            } else {
+                                format!("{prev}；设置默认模型失败：{e}")
+                            });
+                        }
+                    }
+                }
+            }
         }
 
-        // 尝试使用 gateway start（如果支持）或直接 gateway
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/c", &oc_cmd.to_string_lossy()])
-            .args(["gateway", "--port", &port_str, "--allow-unconfigured"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        no_window!(cmd);
+        // 使用可见 PowerShell 新窗口运行 Gateway，便于用户直观看到日志与报错。
+        let gateway_cmd = format!(
+            "& '{}' gateway run --port {} --allow-unconfigured --force",
+            oc_cmd.to_string_lossy().replace('\'', "''"),
+            port_str
+        );
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-NoExit", "-Command", &gateway_cmd])
+            .stdin(Stdio::null());
+        if let Some(dir) = gateway_cwd.as_ref() {
+            cmd.current_dir(dir);
+        }
 
         match cmd.spawn() {
             Ok(child) => {
@@ -1323,7 +1961,7 @@ pub async fn run_gateway_start(window: Window, install_dir: String, port: u16) -
                             success: true,
                             code: "OK".into(),
                             message: format!("Gateway 已就绪 (PID: {}, port: {})", pid, port),
-                            hint: None,
+                            hint: preflight_hint.clone(),
                             command: format!("openclaw gateway --port {}", port),
                             exit_code: Some(0),
                             log_path: None,
@@ -1388,7 +2026,8 @@ pub async fn run_dashboard() -> CommandResult {
 
         // 如果支持 dashboard 命令
         if caps.contains("dashboard") {
-            run_openclaw_cmd(&["dashboard"])
+            let result = run_openclaw_cmd(&["dashboard"]);
+            result
         } else {
             // fallback: 直接打开 URL
             let url = "http://localhost:18789/chat";
@@ -1556,19 +2195,32 @@ pub fn open_folder(path: String) -> Result<(), String> {
 
 /// 以管理员身份重新启动安装器（UAC 提权）
 #[tauri::command]
-pub fn relaunch_as_admin() -> Result<(), String> {
+pub fn relaunch_as_admin() -> Result<AdminRelaunchResult, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let command_preview = format!("Start-Process -FilePath '{}' -Verb RunAs", exe.to_string_lossy());
+    if cfg!(debug_assertions) {
+        return Ok(AdminRelaunchResult {
+            launched: false,
+            close_current: false,
+            message: "本地开发模式下不支持应用内自动提权。请以管理员身份启动终端或 Cursor 后再运行 npm run tauri dev；若要验证正式提权流程，请使用打包后的 exe。".into(),
+        });
+    }
+    let close_current = true;
     let mut cmd = Command::new("powershell");
     cmd.args([
         "-NoProfile", "-Command",
-        &format!("Start-Process -FilePath '{}' -Verb RunAs", exe.to_string_lossy()),
+        &command_preview,
     ])
     .stdin(Stdio::null())
     .stdout(Stdio::null())
     .stderr(Stdio::null());
     no_window!(cmd);
     cmd.spawn().map_err(|e| format!("UAC 提权失败: {e}"))?;
-    Ok(())
+    Ok(AdminRelaunchResult {
+        launched: true,
+        close_current,
+        message: "已启动管理员实例，当前窗口将关闭".into(),
+    })
 }
 
 /// 卸载

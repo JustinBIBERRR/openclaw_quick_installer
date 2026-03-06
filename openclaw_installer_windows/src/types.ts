@@ -8,6 +8,7 @@ export type WizardStep =
   | "syscheck"
   | "installing"
   | "apikey"
+  | "onboarding"
   | "launching";
 
 export type LogLevel = "info" | "ok" | "warn" | "error" | "dim";
@@ -66,6 +67,12 @@ export interface CommandResult {
   stderr: string | null;
 }
 
+export interface AdminRelaunchResult {
+  launched: boolean;
+  close_current: boolean;
+  message: string;
+}
+
 // Doctor 诊断结果
 export interface DoctorResult {
   success: boolean;
@@ -101,4 +108,26 @@ export interface ApiProviderConfig {
   defaultBaseUrl: string;
   models: string[];
   placeholder: string;
+}
+
+export interface ApiKeyDraft {
+  provider: ApiProvider;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  skipped: boolean;
+  keyConfigured: boolean;
+}
+
+export interface SavedApiConfig {
+  provider: string;
+  api_key: string;
+  base_url: string;
+  model: string;
+}
+
+export interface OnboardingSummary {
+  command: string;
+  message: string;
+  hint: string | null;
 }

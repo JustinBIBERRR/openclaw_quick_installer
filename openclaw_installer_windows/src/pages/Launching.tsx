@@ -3,13 +3,14 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Loader, RefreshCw, ExternalLink, Square, Stethoscope, Wrench, FolderOpen, Copy, CheckCircle } from "lucide-react";
 import LogScroller from "../components/LogScroller";
-import type { AppManifest, LogEntry, DoctorResult, CommandResult, CliCapabilities } from "../types";
+import type { AppManifest, LogEntry, DoctorResult, CommandResult, CliCapabilities, OnboardingSummary } from "../types";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 interface Props {
   manifest: AppManifest;
   cliCaps: CliCapabilities | null;
+  onboardingSummary?: OnboardingSummary | null;
   logs: LogEntry[];
   addLog: (level: LogEntry["level"], message: string) => void;
   onDone: (manifest: AppManifest) => void;
@@ -48,7 +49,7 @@ function buildGatewayRecoveryTips(message: string, code: string | null, backendH
   return { hint, tips };
 }
 
-export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: Props) {
+export default function Launching({ manifest, cliCaps, onboardingSummary, logs, addLog, onDone }: Props) {
   const [phase, setPhase] = useState<LaunchPhase>("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [errorHint, setErrorHint] = useState<string | null>(null);
@@ -81,6 +82,11 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
       if (timerRef.current) clearInterval(timerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (phase !== "starting") return;
+    if (elapsed !== 1 && elapsed !== 5 && elapsed !== 30) return;
+  }, [elapsed, phase]);
 
   async function startGateway() {
     cancelledRef.current = false;
@@ -311,7 +317,11 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
     setChatLocked(true);
     addLog("info", "正在打开浏览器，请稍候...");
     try {
-      await invoke("open_url", { url: chatUrl });
+      const result = await invoke<CommandResult>("run_dashboard");
+      if (!result.success) {
+        addLog("warn", "dashboard 打开失败，回退到本地 chat 地址");
+        await invoke("open_url", { url: chatUrl });
+      }
     } finally {
       setOpeningChat(false);
       // 防止连续点击导致重复打开多个页面
@@ -326,6 +336,20 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
         <p className="text-sm text-gray-400 mt-0.5">
           启动本地 AI 网关，成功后可点击按钮打开浏览器
         </p>
+        {onboardingSummary && (
+          <div className="mt-2 bg-gray-900 border border-gray-700 rounded-lg p-3">
+            <p className="text-xs text-gray-400">onboard 执行摘要</p>
+            <p className="text-xs text-gray-200 mt-1">{onboardingSummary.message}</p>
+            {onboardingSummary.command && (
+              <p className="text-[11px] text-gray-500 font-mono mt-1 break-all">
+                {onboardingSummary.command}
+              </p>
+            )}
+            {onboardingSummary.hint && (
+              <p className="text-[11px] text-yellow-500 mt-1">{onboardingSummary.hint}</p>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="bg-gray-900 rounded-lg border border-gray-700 p-4">

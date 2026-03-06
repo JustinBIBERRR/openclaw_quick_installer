@@ -4,7 +4,7 @@ import {
   CheckCircle, XCircle, AlertCircle, Loader,
   ShieldCheck, ExternalLink,
 } from "lucide-react";
-import type { SysCheckItem } from "../types";
+import type { AdminRelaunchResult, SysCheckItem } from "../types";
 import type { EnvEstimate } from "../utils/estimate";
 import { getFullWizardEstimate } from "../utils/estimate";
 
@@ -49,6 +49,7 @@ export default function SysCheck({ envEstimate, onDone }: Props) {
   const [adminFailed, setAdminFailed] = useState(false);
   const [webview2Missing, setWebview2Missing] = useState(false);
   const [relaunching, setRelaunching] = useState(false);
+  const [adminRelaunchMessage, setAdminRelaunchMessage] = useState("");
   const [pathIssue, setPathIssue] = useState("");
 
   const updateCheck = (key: string, update: Partial<SysCheckItem>) => {
@@ -143,12 +144,20 @@ export default function SysCheck({ envEstimate, onDone }: Props) {
 
   async function handleRelaunchAsAdmin() {
     setRelaunching(true);
+    setAdminRelaunchMessage("");
     try {
-      await invoke("relaunch_as_admin");
-      if (isTauri) {
+      const relaunchResult = await invoke<AdminRelaunchResult>("relaunch_as_admin");
+      if (!relaunchResult.launched) {
+        setAdminRelaunchMessage(relaunchResult.message);
+        setRelaunching(false);
+        return;
+      }
+      if (isTauri && relaunchResult.close_current) {
         const { getCurrentWindow } = await import("@tauri-apps/api/window");
         await getCurrentWindow().close();
+        return;
       }
+      setRelaunching(false);
     } catch {
       setRelaunching(false);
     }
@@ -203,6 +212,9 @@ export default function SysCheck({ envEstimate, onDone }: Props) {
                 : <><ShieldCheck size={13} /> 自动重启并以管理员身份运行</>
               }
             </button>
+            {!!adminRelaunchMessage && (
+              <p className="text-xs text-red-300/90">{adminRelaunchMessage}</p>
+            )}
           </div>
         )}
 

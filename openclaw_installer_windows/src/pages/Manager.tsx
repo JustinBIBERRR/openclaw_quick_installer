@@ -201,13 +201,11 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
     setOpeningChat(true);
     setChatLocked(true);
     try {
-      if (cliCaps?.has_dashboard) {
-        const result = await invoke<CommandResult>("run_dashboard");
-        if (!result.success) {
-          setLastError(result.message);
-          setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint || null));
-        }
-      } else {
+      const result = await invoke<CommandResult>("run_dashboard");
+      if (!result.success) {
+        setLastError(result.message);
+        setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint || null));
+        // dashboard 失败时兜底
         await invoke("open_url", { url: chatUrl });
       }
     } catch (e) {

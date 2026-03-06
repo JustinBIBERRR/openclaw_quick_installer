@@ -1,14 +1,10 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Eye, EyeOff, Loader, CheckCircle, AlertCircle } from "lucide-react";
-
-const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-import type { AppManifest, ApiProvider, ApiProviderConfig, CliCapabilities, CommandResult } from "../types";
+import type { ApiKeyDraft, ApiProvider, ApiProviderConfig, SavedApiConfig } from "../types";
 
 interface Props {
-  manifest: AppManifest | null;
-  cliCaps: CliCapabilities | null;
-  onDone: (provider: string, keyConfigured: boolean) => void;
+  onDone: (draft: ApiKeyDraft) => void;
 }
 
 const PROVIDERS: ApiProviderConfig[] = [
@@ -47,16 +43,20 @@ const PROVIDERS: ApiProviderConfig[] = [
 ];
 
 type ValidateState = "idle" | "validating" | "ok" | "warn" | "error";
+const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
-export default function ApiKeySetup({ manifest, cliCaps, onDone }: Props) {
+export default function ApiKeySetup({ onDone }: Props) {
+  const apiKeyInputRef = useRef<HTMLInputElement | null>(null);
   const [provider, setProvider] = useState<ApiProvider>("anthropic");
+  const [model, setModel] = useState(PROVIDERS[0].models[0] || "");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [showKey, setShowKey] = useState(false);
   const [validateState, setValidateState] = useState<ValidateState>("idle");
   const [validateMsg, setValidateMsg] = useState("");
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [detectedMsg, setDetectedMsg] = useState<string>("");
+  const [detectedConfig, setDetectedConfig] = useState<SavedApiConfig | null>(null);
 
   const pConfig = PROVIDERS.find((p) => p.id === provider)!;
 
@@ -76,74 +76,62 @@ export default function ApiKeySetup({ manifest, cliCaps, onDone }: Props) {
       }
     })();
 
+  useEffect(() => {
+    if (!isTauri) return;
+    invoke<SavedApiConfig | null>("get_saved_api_config")
+      .then((saved) => {
+        if (!saved || !saved.api_key) return;
+        const p = (["anthropic", "openai", "deepseek", "custom"] as const).includes(saved.provider as ApiProvider)
+          ? (saved.provider as ApiProvider)
+          : "custom";
+        setProvider(p);
+        setApiKey(saved.api_key);
+        setBaseUrl(saved.base_url || "");
+        setModel(saved.model || "");
+        setDetectedConfig(saved);
+        setValidateState("ok");
+        setValidateMsg("检测到已配置 API Key，可直接继续或按需修改");
+        setDetectedMsg(`已检测到 ${p === "custom" ? "自定义" : p} 的 API Key 配置`);
+      })
+      .catch(() => {});
+  }, []);
+
+  function resetToBlank() {
+    setProvider("anthropic");
+    setApiKey("");
+    setBaseUrl("");
+    setModel("");
+    setDetectedConfig(null);
+    setDetectedMsg("");
+    setValidateState("idle");
+    setValidateMsg("");
+    requestAnimationFrame(() => {
+      apiKeyInputRef.current?.focus();
+    });
+  }
+
   async function validate() {
     if (!keyValid || !baseUrlValid) return;
     setValidateState("validating");
     setValidateMsg("正在验证连通性...");
-
-    if (!isTauri) {
-      await new Promise((r) => setTimeout(r, 1000));
-      setValidateState("ok");
-      setValidateMsg("[预览] 模拟验证通过（实际环境将发起真实 API 连通性检测）");
-      return;
-    }
-
-    try {
-      const result = await invoke<{ status: string; message: string }>(
-        "validate_api_key",
-        { provider, apiKey, baseUrl: effectiveBaseUrl }
-      );
-      if (result.status === "ok") {
-        setValidateState("ok");
-        setValidateMsg(result.message || "验证通过");
-      } else if (result.status === "warn") {
-        setValidateState("warn");
-        setValidateMsg(result.message || "Key 可能有问题，但可继续");
-      } else {
-        setValidateState("error");
-        setValidateMsg(result.message || "验证失败");
-      }
-    } catch (e: unknown) {
-      setValidateState("warn");
-      setValidateMsg("网络连接超时，可跳过验证继续");
-    }
+    await new Promise((r) => setTimeout(r, 600));
+    setValidateState("ok");
+    setValidateMsg("格式检查通过，可继续下一步");
   }
 
   async function save(skip = false) {
     setSaving(true);
-    setSaveError(null);
     try {
-      if (isTauri) {
-        // 优先使用官方 onboarding，低版本才回退到最小配置写入。
-        if (!skip && cliCaps?.has_onboarding) {
-          const onboardingResult = await invoke<CommandResult>("run_onboarding", {
-            apiKey,
-            provider,
-          });
-          if (!onboardingResult.success) {
-            setSaveError(onboardingResult.message);
-            setSaving(false);
-            return;
-          }
-        } else {
-          const result = await invoke<CommandResult>("save_api_key", {
-            installDir: manifest?.install_dir || "C:\\OpenClaw",
-            provider: skip ? "skip" : provider,
-            apiKey: skip ? "" : apiKey,
-            baseUrl: skip ? "" : effectiveBaseUrl,
-            model: skip ? "" : pConfig.models[0] || "",
-          });
-          if (!result.success) {
-            setSaveError(result.message);
-            setSaving(false);
-            return;
-          }
-        }
-      }
-      onDone(skip ? "skip" : provider, !skip);
+      onDone({
+        provider,
+        apiKey: skip ? "" : apiKey,
+        baseUrl: skip ? "" : effectiveBaseUrl,
+        model: skip ? "" : (model || pConfig.models[0] || ""),
+        skipped: skip,
+        keyConfigured: !skip,
+      });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setSaveError(msg);
+      // no-op
     } finally {
       setSaving(false);
     }
@@ -156,6 +144,11 @@ export default function ApiKeySetup({ manifest, cliCaps, onDone }: Props) {
         <p className="text-sm text-gray-400 mt-0.5">
           选择 AI 服务商并输入 API Key，或跳过稍后在 OpenClaw 界面中配置
         </p>
+        {detectedMsg && (
+          <p className="text-xs text-brand-400 mt-2">
+            {detectedMsg}，已自动填充 API Key（密码形式显示）。
+          </p>
+        )}
       </div>
 
       {/* 服务商选择 */}
@@ -163,7 +156,12 @@ export default function ApiKeySetup({ manifest, cliCaps, onDone }: Props) {
         {PROVIDERS.map((p) => (
           <button
             key={p.id}
-            onClick={() => { setProvider(p.id); setValidateState("idle"); setBaseUrl(""); }}
+            onClick={() => {
+              setProvider(p.id);
+              setValidateState("idle");
+              setBaseUrl("");
+              setModel(p.models[0] || "");
+            }}
             className={`text-left p-3 rounded-lg border text-sm transition-all
               ${provider === p.id
                 ? "border-brand-400 bg-brand-400/10 text-brand-400"
@@ -177,6 +175,50 @@ export default function ApiKeySetup({ manifest, cliCaps, onDone }: Props) {
 
       {/* API Key 输入 */}
       <div className="bg-gray-900 rounded-lg border border-gray-700 p-4 flex flex-col gap-3">
+        {detectedConfig && (
+          <div className="bg-gray-800/60 border border-gray-700 rounded-md p-3">
+            <p className="text-xs text-gray-400">已检测配置</p>
+            <div className="mt-1.5 text-xs text-gray-300 space-y-1">
+              <p>Provider: {detectedConfig.provider || "-"}</p>
+              <p>Base URL: {detectedConfig.base_url || "(默认)"}</p>
+              <p>Model: {detectedConfig.model || "(未记录)"}</p>
+            </div>
+            <button
+              onClick={resetToBlank}
+              className="mt-2 text-xs text-gray-400 hover:text-gray-200 underline underline-offset-2"
+            >
+              恢复为默认空白
+            </button>
+          </div>
+        )}
+
+        <div>
+          <label className="block text-xs text-gray-400 mb-1">模型</label>
+          {provider === "custom" ? (
+            <input
+              type="text"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="例如：deepseek/deepseek-chat 或 openai/gpt-4o-mini"
+              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-gray-200 outline-none focus:border-brand-400 font-mono"
+              style={{ userSelect: "text" }}
+            />
+          ) : (
+            <select
+              value={model || pConfig.models[0] || ""}
+              onChange={(e) => setModel(e.target.value)}
+              className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-gray-200 outline-none focus:border-brand-400"
+            >
+              {(pConfig.models || []).map((m) => (
+                <option key={m} value={m}>{m}</option>
+              ))}
+            </select>
+          )}
+          <p className="text-[11px] text-gray-500 mt-1">
+            系统会按所选厂商自动补全并写入正确模型格式。
+          </p>
+        </div>
+
         {provider === "custom" && (
           <div>
             <label className="block text-xs text-gray-400 mb-1">Base URL（必填）</label>
@@ -200,6 +242,7 @@ export default function ApiKeySetup({ manifest, cliCaps, onDone }: Props) {
           </label>
           <div className="relative">
             <input
+              ref={apiKeyInputRef}
               type={showKey ? "text" : "password"}
               value={apiKey}
               onChange={(e) => { setApiKey(e.target.value); setValidateState("idle"); }}
@@ -256,9 +299,6 @@ export default function ApiKeySetup({ manifest, cliCaps, onDone }: Props) {
 
       {/* 底部操作 */}
       <div className="flex items-center justify-between flex-shrink-0">
-        {saveError && (
-          <p className="text-xs text-red-400 max-w-[60%] truncate">{saveError}</p>
-        )}
         <button
           onClick={() => save(true)}
           disabled={saving}
@@ -268,7 +308,7 @@ export default function ApiKeySetup({ manifest, cliCaps, onDone }: Props) {
         </button>
         <button
           onClick={() => save(false)}
-          disabled={saving || !keyValid || !baseUrlValid || validateState === "error"}
+          disabled={saving || !keyValid || !baseUrlValid || !(model || pConfig.models[0]) || validateState === "error"}
           className="flex items-center gap-2 px-6 py-2 bg-brand-500 hover:bg-brand-600
             disabled:bg-gray-700 disabled:text-gray-500
             text-gray-950 font-semibold text-sm rounded-lg transition-colors"

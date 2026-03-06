@@ -3,11 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-import type { AppManifest, WizardStep, LogEntry, GatewayStatus, CheckEnvironmentResult, CliCapabilities } from "./types";
+import type { AppManifest, WizardStep, LogEntry, GatewayStatus, CheckEnvironmentResult, CliCapabilities, ApiKeyDraft, OnboardingSummary } from "./types";
 import type { EnvEstimate } from "./utils/estimate";
 import SysCheck from "./pages/SysCheck";
 import Installing from "./pages/Installing";
 import ApiKeySetup from "./pages/ApiKeySetup";
+import OnboardingSetup from "./pages/OnboardingSetup";
 import Launching from "./pages/Launching";
 import Manager from "./pages/Manager";
 import TitleBar from "./components/TitleBar";
@@ -27,6 +28,8 @@ export default function App() {
   const [cliCaps, setCliCaps] = useState<CliCapabilities | null>(null);
   const [envEstimate, setEnvEstimate] = useState<EnvEstimate | null>(null);
   const [loadingSec, setLoadingSec] = useState(0);
+  const [apiDraft, setApiDraft] = useState<ApiKeyDraft | null>(null);
+  const [onboardingSummary, setOnboardingSummary] = useState<OnboardingSummary | null>(null);
 
   const addLog = (level: LogEntry["level"], message: string) => {
     setLogs((prev) => [
@@ -149,12 +152,18 @@ export default function App() {
     setWizardStep("apikey");
   };
 
-  const handleApiKeyDone = (provider: string, keyConfigured: boolean) => {
+  const handleApiKeyDone = (draft: ApiKeyDraft) => {
+    setApiDraft(draft);
     setManifest((prev) =>
       prev
-        ? { ...prev, api_provider: provider, api_key_configured: keyConfigured }
+        ? { ...prev, api_provider: draft.provider, api_key_configured: draft.keyConfigured }
         : prev
     );
+    setWizardStep("onboarding");
+  };
+
+  const handleOnboardingDone = (summary: OnboardingSummary | null) => {
+    setOnboardingSummary(summary);
     setWizardStep("launching");
   };
 
@@ -164,8 +173,8 @@ export default function App() {
     setGatewayStatus("running");
   };
 
-  const WIZARD_STEPS: WizardStep[] = ["syscheck", "installing", "apikey", "launching"];
-  const STEP_LABELS = ["系统预检", "安装 OpenClaw", "配置 AI 模型", "启动 Gateway"];
+  const WIZARD_STEPS: WizardStep[] = ["syscheck", "installing", "apikey", "onboarding", "launching"];
+  const STEP_LABELS = ["系统预检", "安装 OpenClaw", "配置 AI 模型", "可选能力配置", "启动 Gateway"];
 
   if (view === "loading") {
     return (
@@ -226,15 +235,21 @@ export default function App() {
         )}
         {wizardStep === "apikey" && (
           <ApiKeySetup
-            manifest={manifest}
-            cliCaps={cliCaps}
             onDone={handleApiKeyDone}
+          />
+        )}
+        {wizardStep === "onboarding" && (
+          <OnboardingSetup
+            draft={apiDraft}
+            cliCaps={cliCaps}
+            onDone={handleOnboardingDone}
           />
         )}
         {wizardStep === "launching" && (
           <Launching
             manifest={manifest!}
             cliCaps={cliCaps}
+            onboardingSummary={onboardingSummary}
             logs={logs}
             addLog={addLog}
             onDone={handleLaunchDone}

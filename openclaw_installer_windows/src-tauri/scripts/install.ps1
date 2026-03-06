@@ -1,267 +1,183 @@
-# OpenClaw 安装脚本（简化版：winget/msi 安装 Node，npm 全局装 openclaw）
-# 参数通过环境变量传入（由 Tauri 注入）
-$InstallDir = if ($env:OPENCLAW_INSTALL_DIR) { $env:OPENCLAW_INSTALL_DIR } else { "C:\OpenClaw" }
-
-# 不使用 Set-StrictMode，避免 $null 属性访问崩溃
 $ErrorActionPreference = "Continue"
 
-function Log-Info  { param($msg) Write-Output "[INFO] $msg" }
-function Log-OK    { param($msg) Write-Output "[OK] $msg" }
-function Log-Warn  { param($msg) Write-Output "[WARN] $msg" }
-function Log-Error { param($msg) Write-Output "[ERROR] $msg" }
-function Log-Dim   { param($msg) Write-Output "[DIM] $msg" }
+$ResultFile = $env:OPENCLAW_RESULT_FILE
+$InstallDir = if ($env:OPENCLAW_INSTALL_DIR) { $env:OPENCLAW_INSTALL_DIR } else { "$env:USERPROFILE\OpenClaw" }
 
-# #region agent log
-$_dbgLog = "d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
-function Dbg { param($loc,$msg,$data) try { $ts=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); $j=@{location=$loc;message=$msg;data=$data;timestamp=$ts;runId='ps-install';hypothesisId='PS'}|ConvertTo-Json -Compress; Add-Content -Path $_dbgLog -Value $j -Encoding utf8 } catch {} }
-Dbg "install.ps1:start" "script started" @{InstallDir=$InstallDir}
-# #endregion
+# ── 日志工具 ──────────────────────────────────────────────────────────────────
+$_logDir  = "$InstallDir\logs"
+$_logFile = "$_logDir\install-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
+$_t0      = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 
-# ── 阶段 0: 准备安装目录 ───────────────────────────────────────────────────
+function Write-Log {
+    param([string]$Level, [string]$Msg)
+    $ts  = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    $elapsed = [math]::Round(($ts - $_t0) / 1000, 1)
+    $line = "[{0:s}Z +{1}s] [{2}] {3}" -f [datetime]::UtcNow, $elapsed, $Level.ToUpper(), $Msg
+    try {
+        if (-not (Test-Path $_logDir)) { New-Item -ItemType Directory -Force -Path $_logDir | Out-Null }
+        Add-Content -Path $_logFile -Value $line -Encoding utf8
+    } catch {}
+    switch ($Level.ToLower()) {
+        "ok"    { Write-Host "[OK]    $Msg" -ForegroundColor Green }
+        "warn"  { Write-Host "[WARN]  $Msg" -ForegroundColor Yellow }
+        "error" { Write-Host "[ERROR] $Msg" -ForegroundColor Red }
+        "step"  { Write-Host "`n=== $Msg ===" -ForegroundColor Cyan }
+        default { Write-Host "[INFO]  $Msg" }
+    }
+}
 
-Write-Output "[PROGRESS:0/4] 准备安装目录"
-Log-Info "准备安装目录: $InstallDir"
-try {
-    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-    New-Item -ItemType Directory -Force -Path "$InstallDir\data" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$InstallDir\logs" | Out-Null
-    Log-OK "安装目录已就绪: $InstallDir"
-    Dbg "install.ps1:dirs" "directories created OK" @{dir=$InstallDir}
-} catch {
-    Dbg "install.ps1:dirs-fail" "directory creation FAILED" @{error=$_.ToString()}
-    Log-Error "创建目录失败: $_"
+function Step {
+    param($n, $msg)
+    Write-Log "step" "[$n] $msg"
+}
+
+function LogOk   { param($msg) Write-Log "ok"    $msg }
+function LogInfo { param($msg) Write-Log "info"  $msg }
+function LogWarn { param($msg) Write-Log "warn"  $msg }
+
+function Fail {
+    param($msg)
+    Write-Log "error" $msg
+    if ($ResultFile) {
+        [System.IO.File]::WriteAllText($ResultFile, "error:$msg", [System.Text.Encoding]::ASCII)
+    }
+    Write-Host ""
+    Write-Host "安装失败，窗口将在 10 秒后关闭。如需查看完整日志请前往：" -ForegroundColor Yellow
+    Write-Host "  $_logFile" -ForegroundColor Gray
+    Start-Sleep -Seconds 10
     exit 1
 }
 
-# OpenClaw 使用默认目录 ~/.openclaw/，无需注入环境变量
-
-# ── 阶段 1: 检测 / 安装 Node.js ─────────────────────────────────────────────
-
-Write-Output "[PROGRESS:1/4] 检测 Node.js 运行时"
-Log-Info "正在检测 Node.js..."
-
-function Refresh-Path {
+function Update-Path {
     $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("PATH", "User")
 }
 
-$nodeOk = $false
-$nodeVersion = ""
+# ── 启动记录 ──────────────────────────────────────────────────────────────────
+Write-Log "info" "OpenClaw 安装脚本启动 | InstallDir=$InstallDir | ResultFile=$ResultFile"
 
 try {
-    $sysNode = Get-Command node.exe -ErrorAction SilentlyContinue
-    if ($sysNode) {
-        $verOut = & $sysNode.Source --version 2>&1
-        if ($verOut -match "v(\d+)\.") {
-            $major = [int]$Matches[1]
-            if ($major -ge 18) {
-                $nodeVersion = $verOut.Trim()
-                Log-OK "检测到系统 Node.js $nodeVersion，跳过安装"
-                $nodeOk = $true
-                Dbg "install.ps1:sys-node" "system node OK" @{version=$nodeVersion}
-            } else {
-                Log-Warn "系统 Node.js 版本 $verOut 过低（需 >= v18），将安装 LTS"
-            }
-        }
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    New-Item -ItemType Directory -Force -Path $_logDir   | Out-Null
+} catch {
+    Fail "创建安装目录失败: $_"
+}
+
+# ── 阶段 1: 检测 Node.js ──────────────────────────────────────────────────────
+Step "1/3" "检测 Node.js 运行时"
+$_t1 = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+$nodeReady = $false
+try {
+    $nodeVersion = & node --version 2>&1
+    if ($LASTEXITCODE -eq 0 -and $nodeVersion -match "v(\d+)\." -and [int]$Matches[1] -ge 18) {
+        $nodeReady = $true
+        Write-Log "info" "已有 Node.js: $nodeVersion"
+        LogOk "检测到 Node.js: $nodeVersion"
     } else {
-        Log-Info "未检测到 Node.js，将自动安装"
+        Write-Log "info" "node --version 输出: $nodeVersion（版本不足或未安装）"
     }
 } catch {
-    Dbg "install.ps1:sys-node-err" "system node check failed" @{error=$_.ToString()}
-    Log-Info "Node.js 检测出错，将自动安装"
+    Write-Log "info" "node 检测异常: $_"
 }
 
-if (-not $nodeOk) {
-    # 尝试 winget 静默安装
-    $wingetInstalled = $false
-    try {
-        $wingetExe = Get-Command winget -ErrorAction SilentlyContinue
-        if ($wingetExe) {
-            Log-Info "使用 winget 安装 Node.js LTS..."
-            Write-Output "[PROGRESS:1/4] 使用 winget 安装 Node.js"
-            $wingetProc = Start-Process -FilePath "winget" -ArgumentList @(
-                "install", "OpenJS.NodeJS.LTS",
-                "--silent", "--accept-package-agreements", "--accept-source-agreements"
-            ) -Wait -PassThru -NoNewWindow
-            if ($wingetProc.ExitCode -eq 0) {
-                Refresh-Path
-                Start-Sleep -Seconds 2
-                $verOut = & node.exe --version 2>&1
-                if ($verOut -match "v(\d+)\." -and [int]$Matches[1] -ge 18) {
-                    $nodeVersion = $verOut.Trim()
-                    Log-OK "Node.js 安装完成（winget）: $nodeVersion"
-                    $wingetInstalled = $true
-                    $nodeOk = $true
-                    Dbg "install.ps1:winget-ok" "winget install OK" @{version=$nodeVersion}
-                }
-            }
-            if (-not $wingetInstalled) {
-                Log-Warn "winget 安装未成功（退出码 $($wingetProc.ExitCode)），尝试 msi 安装"
-            }
-        }
-    } catch {
-        Dbg "install.ps1:winget-err" "winget failed" @{error=$_.ToString()}
-        Log-Info "winget 不可用，将下载 msi 安装"
+if (-not $nodeReady) {
+    LogInfo "未检测到 Node.js 18+，尝试使用 winget 安装 Node.js LTS..."
+    winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-package-agreements --accept-source-agreements
+    $wingetNodeExit = $LASTEXITCODE
+    Write-Log "info" "winget install Node.js 退出码: $wingetNodeExit | 耗时: $([math]::Round(([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()-$_t1)/1000,1))s"
+    if ($wingetNodeExit -ne 0) {
+        Fail "Node.js 安装失败（winget 退出码 $wingetNodeExit），请手动安装 Node.js 18+ 后重试"
     }
-
-    # 降级：下载 msi 并静默安装
-    if (-not $nodeOk) {
-        Write-Output "[PROGRESS:1/4] 下载并安装 Node.js"
-        Log-Info "正在下载 Node.js 安装包（约 30MB）..."
-        $msiPath = "$InstallDir\logs\node-v22-x64.msi"
-        $urls = @(
-            "https://cdn.npmmirror.com/binaries/node/v22.11.0/node-v22.11.0-x64.msi",
-            "https://nodejs.org/dist/v22.14.0/node-v22.14.0-x64.msi"
-        )
-        $downloaded = $false
-        foreach ($url in $urls) {
-            try {
-                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                $curlExe = Join-Path $env:SystemRoot "System32\curl.exe"
-                if (Test-Path $curlExe) {
-                    $curlArgs = @("-sS", "-L", "--retry", "3", "--connect-timeout", "15", "--max-time", "1200", "-o", $msiPath, $url)
-                    $curlProc = Start-Process -FilePath $curlExe -ArgumentList $curlArgs -NoNewWindow -PassThru -Wait
-                    if ($curlProc.ExitCode -eq 0 -and (Test-Path $msiPath)) {
-                        $size = (Get-Item $msiPath -ErrorAction SilentlyContinue).Length
-                        if ($size -and $size -gt 1000000) {
-                            $downloaded = $true
-                            Log-OK "Node.js 安装包下载完成"
-                            Dbg "install.ps1:msi-download-ok" "msi downloaded" @{size=$size}
-                            break
-                        }
-                    }
-                }
-                if (-not $downloaded) {
-                    $wc = New-Object System.Net.WebClient
-                    $wc.DownloadFile($url, $msiPath)
-                    if ((Test-Path $msiPath) -and (Get-Item $msiPath).Length -gt 1000000) {
-                        $downloaded = $true
-                        Log-OK "Node.js 安装包下载完成"
-                        break
-                    }
-                }
-            } catch {
-                Log-Warn "下载失败: $url"
-            }
-        }
-        if (-not $downloaded) {
-            Log-Error "无法下载 Node.js 安装包，请检查网络或手动从 https://nodejs.org 安装后重试"
-            Write-Output "[MANUAL_DOWNLOAD]https://nodejs.org/en/download"
-            Dbg "install.ps1:msi-download-fail" "msi download failed" @{}
-            exit 1
-        }
-        Log-Info "正在静默安装 Node.js..."
-        $msiProc = Start-Process -FilePath "msiexec.exe" -ArgumentList @("/i", $msiPath, "/quiet", "/qn", "/norestart") -Wait -PassThru -NoNewWindow
-        Refresh-Path
-        Start-Sleep -Seconds 3
-        $verOut = & node.exe --version 2>&1
-        if ($verOut -match "v(\d+)\." -and [int]$Matches[1] -ge 18) {
-            $nodeVersion = $verOut.Trim()
-            Log-OK "Node.js 安装完成: $nodeVersion"
-            $nodeOk = $true
-            Dbg "install.ps1:msi-install-ok" "msi install OK" @{version=$nodeVersion}
-        } else {
-            Log-Error "Node.js 安装后仍无法识别，请关闭安装器后重新打开再试"
-            exit 1
-        }
-    }
+    Update-Path
+    $nodeVersion = & node --version 2>&1
+    Write-Log "info" "安装后 node 版本: $nodeVersion"
+    LogOk "Node.js 安装完成: $nodeVersion"
 }
 
-if (-not $nodeOk -or -not $nodeVersion) {
-    Log-Error "Node.js 不可用，安装中止"
-    exit 1
-}
+# ── 阶段 2: 检测 / 安装 OpenClaw ──────────────────────────────────────────────
+Step "2/3" "检测 / 安装 OpenClaw"
+$_t2 = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+Update-Path
 
-# ── 阶段 2: 安装 OpenClaw CLI（系统全局）────────────────────────────────────
-
-Write-Output "[PROGRESS:2/4] 检测 / 安装 OpenClaw CLI"
-
-# 先检测 openclaw 是否已经安装且可用（避免重复安装浪费 10-20 分钟）
-Refresh-Path
-$ocAlreadyInstalled = $false
+$existingOcVer = $null
+$openclawAlreadyInstalled = $false
 try {
-    $ocExisting = Get-Command "openclaw" -ErrorAction SilentlyContinue
-    if (-not $ocExisting) { $ocExisting = Get-Command "openclaw.cmd" -ErrorAction SilentlyContinue }
-    if ($ocExisting) {
-        $ocVerCheck = & $ocExisting.Source --version 2>&1
-        if ($LASTEXITCODE -eq 0 -and $ocVerCheck) {
-            $ocAlreadyInstalled = $true
-            Log-OK "OpenClaw 已安装: $($ocVerCheck -join ' ')，跳过 npm install"
-            Dbg "install.ps1:oc-exists" "openclaw already installed, skip npm" @{version=($ocVerCheck -join ' ')}
+    $existingOcCmd = Get-Command openclaw -ErrorAction SilentlyContinue
+    if (-not $existingOcCmd) { $existingOcCmd = Get-Command openclaw.cmd -ErrorAction SilentlyContinue }
+    if ($existingOcCmd) {
+        $existingOcVer = & $existingOcCmd.Source --version 2>&1
+        if ($LASTEXITCODE -eq 0 -and "$existingOcVer".Trim()) {
+            Write-Log "info" "检测到已安装 OpenClaw: $existingOcVer | 路径: $($existingOcCmd.Source)"
+            LogOk "已存在 OpenClaw，跳过安装"
+            $openclawAlreadyInstalled = $true
+        } else {
+            $existingOcVer = $null
         }
     }
-} catch {}
+} catch {
+    Write-Log "warn" "预检 openclaw --version 失败，将继续安装: $_"
+    $existingOcVer = $null
+}
 
-if (-not $ocAlreadyInstalled) {
-    Log-Info "正在安装 openclaw（约 1-3 分钟）..."
-    Log-Dim "来源: registry.npmmirror.com"
-
-    $npmLogErr = "$InstallDir\logs\npm-install-err.log"
-    $npmExitCode = 0
-    try {
-        $npmOutput = & npm install -g openclaw `
-            --registry https://registry.npmmirror.com `
-            --no-audit --no-fund 2>$npmLogErr | ForEach-Object {
-                if ($_ -match "added \d+ package|changed \d+") { Log-OK $_; $_ }
-                elseif ($_ -match "warn|WARN") { Log-Warn $_; $_ }
-                elseif ($_.Trim() -ne "") { Log-Dim $_; $_ }
-            }
-        $npmExitCode = $LASTEXITCODE
-
-        if (Test-Path $npmLogErr) {
-            Get-Content $npmLogErr | ForEach-Object {
-                if ($_ -match "ERR!|error") { Log-Error $_ }
-                elseif ($_ -match "WARN|warn") { Log-Warn $_ }
-                elseif ($_.Trim() -ne "" -and $_ -notmatch "^npm notice") { Log-Dim $_ }
-            }
-        }
-
-        $errContent = if (Test-Path $npmLogErr) { [string](Get-Content $npmLogErr -Raw) } else { "" }
-        Dbg "install.ps1:npm-install-done" "npm install finished" @{exitCode=$npmExitCode;stderrLen=$errContent.Length}
-
-        if ($npmExitCode -ne 0) {
-            if ($errContent -match "EACCES|EPERM|permission denied") {
-                Log-Error "检测到 npm 权限不足（EACCES/EPERM），请以管理员权限运行安装器后重试"
-            } elseif ($errContent -match "ENOTFOUND|ECONNRESET|ETIMEDOUT|network") {
-                Log-Error "检测到 npm 网络错误，请检查网络/代理后重试"
-            } elseif ($errContent -match "openclaw@latest|empty package|placeholder") {
-                Log-Error "检测到 npm 包源异常，请确认安装源可用后重试"
-            }
-            Log-Error "npm install 失败（退出码 $npmExitCode）"
-            exit 1
-        }
-    } catch {
-        Dbg "install.ps1:npm-exec-fail" "npm execution FAILED" @{error=$_.ToString()}
-        Log-Error "npm 执行失败: $_"
-        exit 1
+if (-not $existingOcVer) {
+    LogInfo "执行: npm install -g openclaw@latest"
+    LogInfo "（安装过程约 1-2 分钟，以下为 npm 实时输出）"
+    Write-Host ""
+    npm install -g openclaw@latest
+    $ocInstallExit = $LASTEXITCODE
+    Write-Host ""
+    Write-Log "info" "npm install -g openclaw@latest 退出码: $ocInstallExit | 耗时: $([math]::Round(([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()-$_t2)/1000,1))s"
+    if ($ocInstallExit -ne 0) {
+        Fail "npm install -g openclaw@latest 失败（退出码 $ocInstallExit）"
     }
 }
 
-# ── 阶段 3: 验证安装 ───────────────────────────────────────────────────────
-
-Write-Output "[PROGRESS:3/4] 验证安装"
-Refresh-Path
-Log-Info "验证 OpenClaw..."
-$ocVer = & openclaw --version 2>&1
-if ($LASTEXITCODE -ne 0 -and -not $ocVer) {
-    $ocVer = & openclaw.cmd --version 2>&1
-}
-if ($ocVer) {
-    Log-OK "OpenClaw 版本: $($ocVer -join ' ')"
+# ── 阶段 3: 验证 ──────────────────────────────────────────────────────────────
+Step "3/3" "验证安装"
+Update-Path
+$ocVer = $null
+$ocCmd = Get-Command openclaw -ErrorAction SilentlyContinue
+if (-not $ocCmd) { $ocCmd = Get-Command openclaw.cmd -ErrorAction SilentlyContinue }
+if ($ocCmd) {
+    $ocVer = & $ocCmd.Source --version 2>&1
+    Write-Log "info" "openclaw 路径: $($ocCmd.Source) | 版本输出: $ocVer"
 } else {
-    Log-Warn "无法读取 openclaw 版本，但继续完成安装"
+    # 尝试常见路径
+    $candidates = @(
+        "$env:APPDATA\npm\openclaw.cmd",
+        "$env:USERPROFILE\.openclaw\bin\openclaw"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) {
+            $ocVer = & $c --version 2>&1
+            Write-Log "info" "openclaw 候选路径: $c | 版本输出: $ocVer"
+            break
+        }
+    }
 }
+if (-not $ocVer) {
+    Fail "无法找到 openclaw 命令，安装可能未成功。请重新打开终端后手动运行 openclaw --version 确认"
+}
+LogOk "openclaw 版本: $ocVer"
 
-# ── 阶段 4: 写入安装信息 ───────────────────────────────────────────────────
+# ── 写入安装信息 ──────────────────────────────────────────────────────────────
+$totalSec = [math]::Round(([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $_t0) / 1000, 1)
+Write-Log "info" "安装完成 | 总耗时: ${totalSec}s | 日志: $_logFile"
 
-Write-Output "[PROGRESS:4/4] 完成"
 $installInfo = @{
     install_dir  = $InstallDir
     port         = 18789
     installed_at = (Get-Date -Format "yyyy-MM-ddTHH:mm:ss")
+    log_file     = $_logFile
+    total_sec    = $totalSec
+    oc_version   = "$ocVer"
+    existing_openclaw = $openclawAlreadyInstalled
 } | ConvertTo-Json
 $installInfo | Out-File "$InstallDir\install-info.json" -Encoding utf8
 
-Dbg "install.ps1:complete" "install script completed successfully" @{}
-Log-OK "OpenClaw 安装完成！"
-Write-Output "[RESULT]install_ok"
+if ($ResultFile) {
+    [System.IO.File]::WriteAllText($ResultFile, "install_ok", [System.Text.Encoding]::ASCII)
+}
+LogOk "安装完成！总耗时 ${totalSec}s，窗口将在 3 秒后自动关闭..."
+LogInfo "完整日志已保存至: $_logFile"
+Start-Sleep -Seconds 3
