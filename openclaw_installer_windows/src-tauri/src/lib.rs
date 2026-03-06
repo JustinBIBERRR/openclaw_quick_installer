@@ -23,6 +23,13 @@ pub fn run() {
             commands::relaunch_as_admin,
             commands::uninstall,
             commands::get_default_install_dir,
+            commands::detect_cli_capabilities,
+            commands::run_doctor,
+            commands::run_doctor_fix,
+            commands::run_onboarding,
+            commands::run_gateway_start,
+            commands::run_dashboard,
+            commands::get_log_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

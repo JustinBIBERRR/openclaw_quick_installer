@@ -80,6 +80,83 @@ pub struct CheckEnvironmentResult {
     pub manifest: Option<AppManifest>,
 }
 
+// ─── 结构化命令结果 ──────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CommandResult {
+    pub success: bool,
+    pub code: String,
+    pub message: String,
+    pub hint: Option<String>,
+    pub command: String,
+    pub exit_code: Option<i32>,
+    pub log_path: Option<String>,
+    pub retriable: bool,
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+}
+
+impl CommandResult {
+    fn ok(command: &str, message: &str) -> Self {
+        Self {
+            success: true,
+            code: "OK".into(),
+            message: message.into(),
+            hint: None,
+            command: command.into(),
+            exit_code: Some(0),
+            log_path: None,
+            retriable: false,
+            stdout: None,
+            stderr: None,
+        }
+    }
+
+    fn error(command: &str, code: &str, message: &str, hint: Option<&str>, retriable: bool) -> Self {
+        Self {
+            success: false,
+            code: code.into(),
+            message: message.into(),
+            hint: hint.map(|s| s.into()),
+            command: command.into(),
+            exit_code: None,
+            log_path: None,
+            retriable,
+            stdout: None,
+            stderr: None,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DoctorIssue {
+    pub code: String,
+    pub message: String,
+    pub severity: String,
+    pub fixable: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DoctorResult {
+    pub success: bool,
+    pub passed: bool,
+    pub issues: Vec<DoctorIssue>,
+    pub summary: String,
+    pub log_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CliCapabilities {
+    pub version: Option<String>,
+    pub has_onboarding: bool,
+    pub has_doctor: bool,
+    pub has_gateway: bool,
+    pub has_dashboard: bool,
+    pub onboarding_flags: Vec<String>,
+    pub doctor_flags: Vec<String>,
+    pub gateway_flags: Vec<String>,
+}
+
 // ─── 嵌入 PowerShell 脚本（编译时内嵌，运行时写入临时目录）─────────────────
 static INSTALL_PS1:  &str = include_str!("../scripts/install.ps1");
 static GATEWAY_PS1:  &str = include_str!("../scripts/gateway.ps1");
@@ -790,6 +867,452 @@ fn refresh_path() {
             std::env::set_var("PATH", &new_path);
         }
     }
+}
+
+// ─── 官方命令能力探测与执行 ──────────────────────────────────────────────────
+
+/// 获取命令日志目录
+fn get_log_dir() -> PathBuf {
+    let profile = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".into());
+    let log_dir = PathBuf::from(&profile).join(".openclaw").join("installer-logs");
+    std::fs::create_dir_all(&log_dir).ok();
+    log_dir
+}
+
+/// 将命令输出写入日志文件
+fn write_command_log(cmd_name: &str, stdout: &str, stderr: &str) -> Option<String> {
+    let log_dir = get_log_dir();
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let log_file = log_dir.join(format!("{}_{}.log", cmd_name, ts));
+    let content = format!(
+        "=== {} ===\nTimestamp: {}\n\n--- STDOUT ---\n{}\n\n--- STDERR ---\n{}\n",
+        cmd_name, ts, stdout, stderr
+    );
+    std::fs::write(&log_file, &content).ok()?;
+    Some(log_file.to_string_lossy().into_owned())
+}
+
+/// 执行 openclaw 命令并返回结构化结果
+fn run_openclaw_cmd(args: &[&str]) -> CommandResult {
+    refresh_path();
+    
+    let oc_cmd = match find_openclaw_cmd() {
+        Some(c) => c,
+        None => return CommandResult::error(
+            &args.join(" "),
+            "CMD_NOT_FOUND",
+            "找不到 openclaw 命令",
+            Some("请先完成安装步骤，或检查 PATH 环境变量"),
+            true,
+        ),
+    };
+
+    let cmd_str = format!("{} {}", oc_cmd.display(), args.join(" "));
+    let mut cmd = Command::new("cmd");
+    cmd.args(["/c", &oc_cmd.to_string_lossy()])
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    no_window!(cmd);
+
+    match cmd.output() {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            let log_path = write_command_log(args.first().unwrap_or(&"unknown"), &stdout, &stderr);
+            let exit_code = output.status.code();
+
+            if output.status.success() {
+                CommandResult {
+                    success: true,
+                    code: "OK".into(),
+                    message: "命令执行成功".into(),
+                    hint: None,
+                    command: cmd_str,
+                    exit_code,
+                    log_path,
+                    retriable: false,
+                    stdout: Some(stdout),
+                    stderr: if stderr.is_empty() { None } else { Some(stderr) },
+                }
+            } else {
+                let hint = if stderr.contains("ECONNREFUSED") || stderr.contains("network") {
+                    Some("网络连接问题，请检查网络后重试")
+                } else if stderr.contains("permission") || stderr.contains("EPERM") {
+                    Some("权限不足，请尝试以管理员身份运行")
+                } else if stderr.contains("config") || stderr.contains("openclaw.json") {
+                    Some("配置文件问题，可尝试运行 openclaw doctor --fix")
+                } else {
+                    None
+                };
+
+                CommandResult {
+                    success: false,
+                    code: format!("EXIT_{}", exit_code.unwrap_or(-1)),
+                    message: if stderr.is_empty() {
+                        format!("命令退出码: {}", exit_code.unwrap_or(-1))
+                    } else {
+                        stderr.lines().last().unwrap_or("命令执行失败").to_string()
+                    },
+                    hint: hint.map(|s| s.into()),
+                    command: cmd_str,
+                    exit_code,
+                    log_path,
+                    retriable: true,
+                    stdout: Some(stdout),
+                    stderr: Some(stderr),
+                }
+            }
+        }
+        Err(e) => CommandResult::error(
+            &cmd_str,
+            "SPAWN_ERROR",
+            &format!("无法启动命令: {}", e),
+            Some("请检查系统环境"),
+            true,
+        ),
+    }
+}
+
+/// 探测 openclaw CLI 能力
+#[tauri::command]
+pub fn detect_cli_capabilities() -> CliCapabilities {
+    refresh_path();
+    
+    let oc_cmd = match find_openclaw_cmd() {
+        Some(c) => c,
+        None => return CliCapabilities {
+            version: None,
+            has_onboarding: false,
+            has_doctor: false,
+            has_gateway: false,
+            has_dashboard: false,
+            onboarding_flags: vec![],
+            doctor_flags: vec![],
+            gateway_flags: vec![],
+        },
+    };
+
+    // 获取版本
+    let version = {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", &oc_cmd.to_string_lossy(), "--version"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        no_window!(cmd);
+        cmd.output()
+            .ok()
+            .and_then(|o| {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if s.is_empty() { None } else { Some(s) }
+            })
+    };
+
+    // 获取帮助信息来判断子命令是否存在
+    let help_output = {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", &oc_cmd.to_string_lossy(), "--help"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        no_window!(cmd);
+        cmd.output()
+            .map(|o| {
+                let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                format!("{}\n{}", stdout, stderr)
+            })
+            .unwrap_or_default()
+    };
+
+    let has_onboarding = help_output.contains("onboarding");
+    let has_doctor = help_output.contains("doctor");
+    let has_gateway = help_output.contains("gateway");
+    let has_dashboard = help_output.contains("dashboard");
+
+    // 获取各子命令的 flags
+    let get_subcommand_flags = |subcmd: &str| -> Vec<String> {
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", &oc_cmd.to_string_lossy(), subcmd, "--help"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        no_window!(cmd);
+        let output = cmd.output().ok();
+        let text = output.map(|o| {
+            format!("{}\n{}", 
+                String::from_utf8_lossy(&o.stdout),
+                String::from_utf8_lossy(&o.stderr))
+        }).unwrap_or_default();
+        
+        let mut flags = vec![];
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("--") || trimmed.starts_with("-") {
+                if let Some(flag) = trimmed.split_whitespace().next() {
+                    flags.push(flag.trim_start_matches('-').to_string());
+                }
+            }
+        }
+        flags
+    };
+
+    CliCapabilities {
+        version,
+        has_onboarding,
+        has_doctor,
+        has_gateway,
+        has_dashboard,
+        onboarding_flags: if has_onboarding { get_subcommand_flags("onboarding") } else { vec![] },
+        doctor_flags: if has_doctor { get_subcommand_flags("doctor") } else { vec![] },
+        gateway_flags: if has_gateway { get_subcommand_flags("gateway") } else { vec![] },
+    }
+}
+
+/// 运行 openclaw doctor 诊断
+#[tauri::command]
+pub async fn run_doctor() -> DoctorResult {
+    let result = tokio::task::spawn_blocking(|| {
+        run_openclaw_cmd(&["doctor"])
+    }).await.unwrap_or_else(|_| CommandResult::error("doctor", "TASK_ERROR", "任务执行失败", None, true));
+
+    let stdout = result.stdout.as_deref().unwrap_or("");
+    let stderr = result.stderr.as_deref().unwrap_or("");
+    let combined = format!("{}\n{}", stdout, stderr);
+
+    // 解析 doctor 输出中的问题
+    let mut issues = vec![];
+    let mut passed = result.success;
+    
+    for line in combined.lines() {
+        let line_lower = line.to_lowercase();
+        if line_lower.contains("error") || line_lower.contains("❌") || line_lower.contains("[x]") {
+            passed = false;
+            issues.push(DoctorIssue {
+                code: "ERROR".into(),
+                message: line.trim().to_string(),
+                severity: "error".into(),
+                fixable: line_lower.contains("fix") || line_lower.contains("config"),
+            });
+        } else if line_lower.contains("warn") || line_lower.contains("⚠") {
+            issues.push(DoctorIssue {
+                code: "WARN".into(),
+                message: line.trim().to_string(),
+                severity: "warn".into(),
+                fixable: true,
+            });
+        }
+    }
+
+    let summary = if passed {
+        "诊断通过，未发现问题".into()
+    } else {
+        format!("发现 {} 个问题", issues.len())
+    };
+
+    DoctorResult {
+        success: result.success,
+        passed,
+        issues,
+        summary,
+        log_path: result.log_path,
+    }
+}
+
+/// 运行 openclaw doctor --fix 自动修复
+#[tauri::command]
+pub async fn run_doctor_fix() -> CommandResult {
+    tokio::task::spawn_blocking(|| {
+        run_openclaw_cmd(&["doctor", "--fix"])
+    }).await.unwrap_or_else(|_| CommandResult::error("doctor --fix", "TASK_ERROR", "任务执行失败", None, true))
+}
+
+/// 运行 openclaw onboarding（非交互模式，跳过高级配置）
+#[tauri::command]
+pub async fn run_onboarding(api_key: String, provider: String) -> CommandResult {
+    let provider_arg = provider.clone();
+    let key_arg = api_key.clone();
+    
+    tokio::task::spawn_blocking(move || {
+        // 检测是否支持非交互 flags
+        let caps = {
+            refresh_path();
+            let oc_cmd = match find_openclaw_cmd() {
+                Some(c) => c,
+                None => return CommandResult::error("onboarding", "CMD_NOT_FOUND", "找不到 openclaw 命令", None, true),
+            };
+            
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/c", &oc_cmd.to_string_lossy(), "onboarding", "--help"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            no_window!(cmd);
+            cmd.output()
+                .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                .unwrap_or_default()
+        };
+
+        // 根据可用 flags 构建命令
+        let mut args: Vec<&str> = vec!["onboarding"];
+        
+        // 常见的非交互 flags
+        if caps.contains("--non-interactive") || caps.contains("non-interactive") {
+            args.push("--non-interactive");
+        }
+        if caps.contains("--skip-skills") {
+            args.push("--skip-skills");
+        }
+        if caps.contains("--skip-integrations") {
+            args.push("--skip-integrations");
+        }
+        
+        // 如果支持直接传入 provider 和 key
+        let provider_flag = format!("--provider={}", provider_arg);
+        let key_flag = format!("--api-key={}", key_arg);
+        
+        if caps.contains("--provider") {
+            args.push(&provider_flag);
+        }
+        if caps.contains("--api-key") {
+            args.push(&key_flag);
+        }
+
+        run_openclaw_cmd(&args)
+    }).await.unwrap_or_else(|_| CommandResult::error("onboarding", "TASK_ERROR", "任务执行失败", None, true))
+}
+
+/// 使用官方命令启动 Gateway
+#[tauri::command]
+pub async fn run_gateway_start(window: Window, port: u16) -> CommandResult {
+    let port_str = port.to_string();
+    
+    window.emit("gateway-log", serde_json::json!({
+        "level": "info",
+        "message": "正在启动 Gateway..."
+    })).ok();
+
+    let result = tokio::task::spawn_blocking(move || {
+        refresh_path();
+        
+        let oc_cmd = match find_openclaw_cmd() {
+            Some(c) => c,
+            None => return CommandResult::error("gateway", "CMD_NOT_FOUND", "找不到 openclaw 命令", None, true),
+        };
+
+        // 检查是否已在运行
+        if tcp_port_open(port) {
+            return CommandResult::ok("gateway", &format!("Gateway 已在运行 (port {})", port));
+        }
+
+        // 尝试使用 gateway start（如果支持）或直接 gateway
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", &oc_cmd.to_string_lossy()])
+            .args(["gateway", "--port", &port_str, "--allow-unconfigured"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        no_window!(cmd);
+
+        match cmd.spawn() {
+            Ok(child) => {
+                let pid = child.id();
+                std::mem::forget(child);
+                
+                // 等待健康检查
+                for _ in 0..45 {
+                    std::thread::sleep(Duration::from_secs(2));
+                    if tcp_port_open(port) {
+                        return CommandResult {
+                            success: true,
+                            code: "OK".into(),
+                            message: format!("Gateway 已就绪 (PID: {}, port: {})", pid, port),
+                            hint: None,
+                            command: format!("openclaw gateway --port {}", port),
+                            exit_code: Some(0),
+                            log_path: None,
+                            retriable: false,
+                            stdout: Some(format!("PID: {}", pid)),
+                            stderr: None,
+                        };
+                    }
+                }
+                
+                CommandResult::error(
+                    &format!("openclaw gateway --port {}", port),
+                    "TIMEOUT",
+                    "Gateway 在 90 秒内未就绪",
+                    Some("请检查日志或运行 openclaw doctor 诊断"),
+                    true,
+                )
+            }
+            Err(e) => CommandResult::error(
+                "gateway",
+                "SPAWN_ERROR",
+                &format!("启动 Gateway 失败: {}", e),
+                Some("请检查 openclaw 是否正确安装"),
+                true,
+            ),
+        }
+    }).await.unwrap_or_else(|_| CommandResult::error("gateway", "TASK_ERROR", "任务执行失败", None, true));
+
+    if result.success {
+        window.emit("gateway-log", serde_json::json!({
+            "level": "ok",
+            "message": &result.message
+        })).ok();
+    } else {
+        window.emit("gateway-log", serde_json::json!({
+            "level": "error",
+            "message": &result.message
+        })).ok();
+    }
+
+    result
+}
+
+/// 打开 openclaw dashboard（使用官方命令）
+#[tauri::command]
+pub async fn run_dashboard() -> CommandResult {
+    tokio::task::spawn_blocking(|| {
+        let caps = {
+            refresh_path();
+            let oc_cmd = find_openclaw_cmd();
+            oc_cmd.map(|c| {
+                let mut cmd = Command::new("cmd");
+                cmd.args(["/c", &c.to_string_lossy(), "--help"])
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::null());
+                no_window!(cmd);
+                cmd.output()
+                    .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+                    .unwrap_or_default()
+            }).unwrap_or_default()
+        };
+
+        // 如果支持 dashboard 命令
+        if caps.contains("dashboard") {
+            run_openclaw_cmd(&["dashboard"])
+        } else {
+            // fallback: 直接打开 URL
+            let url = "http://localhost:18789/chat";
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/c", "start", "", url])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            no_window!(cmd);
+            match cmd.spawn() {
+                Ok(_) => CommandResult::ok("open_url", &format!("已打开 {}", url)),
+                Err(e) => CommandResult::error("open_url", "OPEN_ERROR", &format!("打开失败: {}", e), None, false),
+            }
+        }
+    }).await.unwrap_or_else(|_| CommandResult::error("dashboard", "TASK_ERROR", "任务执行失败", None, true))
+}
+
+/// 获取日志目录路径
+#[tauri::command]
+pub fn get_log_directory() -> String {
+    get_log_dir().to_string_lossy().into_owned()
 }
 
 /// 启动 Gateway：直接运行 openclaw gateway，流式输出到 UI

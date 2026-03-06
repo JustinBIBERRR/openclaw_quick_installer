@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Loader, RefreshCw, ExternalLink, Square } from "lucide-react";
+import { Loader, RefreshCw, ExternalLink, Square, Stethoscope, Wrench, FolderOpen, Copy, CheckCircle } from "lucide-react";
 import LogScroller from "../components/LogScroller";
-import type { AppManifest, LogEntry } from "../types";
+import type { AppManifest, LogEntry, DoctorResult, CommandResult } from "../types";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -14,13 +14,19 @@ interface Props {
   onDone: (manifest: AppManifest) => void;
 }
 
-type LaunchPhase = "idle" | "starting" | "done" | "failed";
+type LaunchPhase = "idle" | "starting" | "done" | "failed" | "diagnosing" | "fixing";
 
 export default function Launching({ manifest, logs, addLog, onDone }: Props) {
   const [phase, setPhase] = useState<LaunchPhase>("idle");
   const [errorMsg, setErrorMsg] = useState("");
+  const [errorHint, setErrorHint] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<string | null>(null);
+  const [logPath, setLogPath] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [stopping, setStopping] = useState(false);
+  const [doctorResult, setDoctorResult] = useState<DoctorResult | null>(null);
+  const [fixResult, setFixResult] = useState<CommandResult | null>(null);
+  const [copied, setCopied] = useState(false);
   const startedRef = useRef(false);
   const cancelledRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -45,6 +51,11 @@ export default function Launching({ manifest, logs, addLog, onDone }: Props) {
     cancelledRef.current = false;
     setPhase("starting");
     setErrorMsg("");
+    setErrorHint(null);
+    setErrorCode(null);
+    setLogPath(null);
+    setDoctorResult(null);
+    setFixResult(null);
     setElapsed(0);
     setStopping(false);
     timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
@@ -84,10 +95,110 @@ export default function Launching({ manifest, logs, addLog, onDone }: Props) {
     } catch (e: unknown) {
       if (timerRef.current) clearInterval(timerRef.current);
       if (cancelledRef.current) return;
-      const msg = e instanceof Error ? e.message : String(e);
+      
+      // 尝试解析结构化错误
+      let msg = e instanceof Error ? e.message : String(e);
+      let hint: string | null = null;
+      let code: string | null = null;
+      let logFile: string | null = null;
+      
+      try {
+        const parsed = JSON.parse(msg) as CommandResult;
+        msg = parsed.message;
+        hint = parsed.hint || null;
+        code = parsed.code;
+        logFile = parsed.log_path || null;
+      } catch {
+        // 不是 JSON，保持原始消息
+      }
+      
       setPhase("failed");
       setErrorMsg(msg);
+      setErrorHint(hint);
+      setErrorCode(code);
+      setLogPath(logFile);
       addLog("error", `启动失败: ${msg}`);
+    }
+  }
+
+  async function runDiagnose() {
+    setPhase("diagnosing");
+    addLog("info", "正在运行 openclaw doctor 诊断...");
+    
+    try {
+      const result = await invoke<DoctorResult>("run_doctor");
+      setDoctorResult(result);
+      setLogPath(result.log_path || null);
+      
+      if (result.passed) {
+        addLog("ok", `诊断通过: ${result.summary}`);
+      } else {
+        addLog("warn", `诊断发现问题: ${result.summary}`);
+        for (const issue of result.issues) {
+          addLog(issue.severity === "error" ? "error" : "warn", issue.message);
+        }
+      }
+      
+      setPhase("failed");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addLog("error", `诊断失败: ${msg}`);
+      setPhase("failed");
+    }
+  }
+
+  async function runFix() {
+    setPhase("fixing");
+    addLog("info", "正在运行 openclaw doctor --fix 修复...");
+    
+    try {
+      const result = await invoke<CommandResult>("run_doctor_fix");
+      setFixResult(result);
+      setLogPath(result.log_path || null);
+      
+      if (result.success) {
+        addLog("ok", "修复完成，正在重新启动 Gateway...");
+        await new Promise((r) => setTimeout(r, 1000));
+        startGateway();
+      } else {
+        addLog("error", `修复失败: ${result.message}`);
+        if (result.hint) {
+          addLog("warn", result.hint);
+        }
+        setPhase("failed");
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      addLog("error", `修复失败: ${msg}`);
+      setPhase("failed");
+    }
+  }
+
+  async function openLogDirectory() {
+    try {
+      const logDir = await invoke<string>("get_log_directory");
+      await invoke("open_folder", { path: logDir });
+    } catch (e) {
+      addLog("error", `打开日志目录失败: ${e}`);
+    }
+  }
+
+  async function copyDiagnosticInfo() {
+    const info = [
+      `错误代码: ${errorCode || "未知"}`,
+      `错误信息: ${errorMsg}`,
+      errorHint ? `建议: ${errorHint}` : null,
+      logPath ? `日志文件: ${logPath}` : null,
+      doctorResult ? `诊断结果: ${doctorResult.summary}` : null,
+      doctorResult?.issues.length ? `问题列表:\n${doctorResult.issues.map(i => `  - ${i.message}`).join("\n")}` : null,
+    ].filter(Boolean).join("\n");
+    
+    try {
+      await navigator.clipboard.writeText(info);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      addLog("error", "复制失败");
     }
   }
 
@@ -149,6 +260,24 @@ export default function Launching({ manifest, logs, addLog, onDone }: Props) {
             </div>
           </div>
         )}
+        {phase === "diagnosing" && (
+          <div className="flex items-center gap-3">
+            <Stethoscope size={20} className="text-yellow-400 animate-pulse flex-shrink-0" />
+            <div>
+              <p className="text-sm text-gray-200">正在诊断问题...</p>
+              <p className="text-xs text-gray-500 mt-0.5">运行 openclaw doctor</p>
+            </div>
+          </div>
+        )}
+        {phase === "fixing" && (
+          <div className="flex items-center gap-3">
+            <Wrench size={20} className="text-yellow-400 animate-pulse flex-shrink-0" />
+            <div>
+              <p className="text-sm text-gray-200">正在修复问题...</p>
+              <p className="text-xs text-gray-500 mt-0.5">运行 openclaw doctor --fix</p>
+            </div>
+          </div>
+        )}
         {phase === "done" && (
           <div className="flex items-center gap-3">
             <span className="relative flex h-4 w-4 flex-shrink-0">
@@ -162,9 +291,50 @@ export default function Launching({ manifest, logs, addLog, onDone }: Props) {
           </div>
         )}
         {phase === "failed" && (
-          <div>
-            <p className="text-sm text-red-400">启动失败</p>
-            <p className="text-xs text-gray-500 mt-1 break-all">{errorMsg}</p>
+          <div className="space-y-3">
+            <div className="flex items-start gap-3">
+              <div className="w-4 h-4 rounded-full bg-red-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                <span className="w-2 h-2 rounded-full bg-red-500" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm text-red-400 font-medium">启动失败</p>
+                {errorCode && (
+                  <p className="text-xs text-gray-600 font-mono mt-0.5">{errorCode}</p>
+                )}
+                <p className="text-xs text-gray-400 mt-1 break-all">{errorMsg}</p>
+                {errorHint && (
+                  <p className="text-xs text-yellow-500 mt-1">{errorHint}</p>
+                )}
+              </div>
+            </div>
+            
+            {doctorResult && !doctorResult.passed && (
+              <div className="bg-gray-800 rounded-lg p-3 space-y-2">
+                <p className="text-xs text-gray-400 font-medium">诊断结果:</p>
+                <p className="text-xs text-yellow-400">{doctorResult.summary}</p>
+                {doctorResult.issues.length > 0 && (
+                  <ul className="text-xs text-gray-500 space-y-1 pl-3">
+                    {doctorResult.issues.slice(0, 5).map((issue, i) => (
+                      <li key={i} className={issue.severity === "error" ? "text-red-400" : "text-yellow-500"}>
+                        {issue.message}
+                      </li>
+                    ))}
+                    {doctorResult.issues.length > 5 && (
+                      <li className="text-gray-600">...还有 {doctorResult.issues.length - 5} 个问题</li>
+                    )}
+                  </ul>
+                )}
+              </div>
+            )}
+
+            {fixResult && !fixResult.success && (
+              <div className="bg-gray-800 rounded-lg p-3">
+                <p className="text-xs text-red-400">修复失败: {fixResult.message}</p>
+                {fixResult.hint && (
+                  <p className="text-xs text-yellow-500 mt-1">{fixResult.hint}</p>
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -176,9 +346,9 @@ export default function Launching({ manifest, logs, addLog, onDone }: Props) {
         <LogScroller logs={logs} maxHeight="h-full min-h-[150px]" />
       </div>
 
-      <div className="flex items-center justify-between flex-shrink-0">
+      <div className="flex flex-col gap-3 flex-shrink-0">
         {phase === "starting" && (
-          <>
+          <div className="flex items-center justify-between">
             <p className="text-sm text-gray-500">正在等待 Gateway 响应...</p>
             <div className="flex gap-2">
               <button
@@ -200,24 +370,65 @@ export default function Launching({ manifest, logs, addLog, onDone }: Props) {
                 重试
               </button>
             </div>
-          </>
+          </div>
+        )}
+        {(phase === "diagnosing" || phase === "fixing") && (
+          <div className="flex items-center justify-center">
+            <p className="text-sm text-gray-500">请稍候...</p>
+          </div>
         )}
         {phase === "failed" && (
           <>
-            <p className="text-xs text-gray-500 max-w-xs">
-              如果问题持续，请尝试重启或检查端口是否被占用
-            </p>
-            <button
-              onClick={handleRetry}
-              className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm rounded-lg transition-colors"
-            >
-              <RefreshCw size={14} />
-              重新启动
-            </button>
+            <div className="flex items-center justify-between">
+              <div className="flex gap-2">
+                <button
+                  onClick={runDiagnose}
+                  className="flex items-center gap-2 px-3 py-2 bg-yellow-900/30 hover:bg-yellow-800/40 text-yellow-400 text-sm rounded-lg transition-colors"
+                >
+                  <Stethoscope size={14} />
+                  诊断问题
+                </button>
+                <button
+                  onClick={runFix}
+                  className="flex items-center gap-2 px-3 py-2 bg-yellow-900/30 hover:bg-yellow-800/40 text-yellow-400 text-sm rounded-lg transition-colors"
+                >
+                  <Wrench size={14} />
+                  一键修复
+                </button>
+              </div>
+              <button
+                onClick={handleRetry}
+                className="flex items-center gap-2 px-4 py-2 bg-brand-500 hover:bg-brand-600 text-gray-950 font-semibold text-sm rounded-lg transition-colors"
+              >
+                <RefreshCw size={14} />
+                重新启动
+              </button>
+            </div>
+            <div className="flex items-center justify-between border-t border-gray-800 pt-3">
+              <div className="flex gap-2">
+                <button
+                  onClick={openLogDirectory}
+                  className="flex items-center gap-1.5 px-2 py-1.5 text-gray-500 hover:text-gray-300 text-xs rounded transition-colors"
+                >
+                  <FolderOpen size={12} />
+                  查看日志
+                </button>
+                <button
+                  onClick={copyDiagnosticInfo}
+                  className="flex items-center gap-1.5 px-2 py-1.5 text-gray-500 hover:text-gray-300 text-xs rounded transition-colors"
+                >
+                  {copied ? <CheckCircle size={12} className="text-green-400" /> : <Copy size={12} />}
+                  {copied ? "已复制" : "复制诊断信息"}
+                </button>
+              </div>
+              <p className="text-xs text-gray-600">
+                如问题持续，请查看日志或联系支持
+              </p>
+            </div>
           </>
         )}
         {phase === "done" && (
-          <>
+          <div className="flex items-center justify-between">
             <p className="text-sm text-brand-400">安装完成！桌面快捷方式已创建</p>
             <button
               onClick={() => invoke("open_url", { url: chatUrl })}
@@ -226,7 +437,7 @@ export default function Launching({ manifest, logs, addLog, onDone }: Props) {
               <ExternalLink size={14} />
               打开 OpenClaw
             </button>
-          </>
+          </div>
         )}
       </div>
     </div>

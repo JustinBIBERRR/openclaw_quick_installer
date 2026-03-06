@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   ExternalLink, RefreshCw, Square, Play, FolderOpen,
-  Trash2, ChevronRight, Loader, FileEdit
+  Trash2, ChevronRight, Loader, FileEdit, Stethoscope, Wrench,
+  AlertTriangle, X
 } from "lucide-react";
 import StatusDot from "../components/StatusDot";
 import TitleBar from "../components/TitleBar";
-import type { AppManifest, GatewayStatus } from "../types";
+import type { AppManifest, GatewayStatus, DoctorResult, CommandResult } from "../types";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -19,6 +20,10 @@ interface Props {
 
 export default function Manager({ manifest, gatewayStatus, onStatusChange }: Props) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [lastError, setLastError] = useState<string | null>(null);
+  const [lastErrorHint, setLastErrorHint] = useState<string | null>(null);
+  const [doctorResult, setDoctorResult] = useState<DoctorResult | null>(null);
+  const [showDoctorPanel, setShowDoctorPanel] = useState(false);
 
   const port = manifest.gateway_port || 18789;
   const chatUrl = `http://localhost:${port}/chat`;
@@ -44,11 +49,34 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
 
   async function doAction(action: string) {
     setActionLoading(action);
+    setLastError(null);
+    setLastErrorHint(null);
+    
     try {
       if (action === "start") {
         onStatusChange("starting");
         await invoke("start_gateway_bg", { installDir: manifest.install_dir, port });
-        setTimeout(checkStatus, 3000);
+        // 等待并检查状态
+        await new Promise((r) => setTimeout(r, 3000));
+        const status = await invoke<string>("get_gateway_status", { installDir: manifest.install_dir, port });
+        if (status !== "running") {
+          // 启动可能失败，检查几次
+          let retries = 3;
+          while (retries > 0) {
+            await new Promise((r) => setTimeout(r, 2000));
+            const s = await invoke<string>("get_gateway_status", { installDir: manifest.install_dir, port });
+            if (s === "running") {
+              onStatusChange("running");
+              return;
+            }
+            retries--;
+          }
+          setLastError("Gateway 启动失败，请检查配置或运行诊断");
+          setLastErrorHint("可能是配置文件问题或端口被占用");
+          onStatusChange("stopped");
+        } else {
+          onStatusChange("running");
+        }
       } else if (action === "stop" || action === "force_stop") {
         await invoke("kill_gateway_process", { installDir: manifest.install_dir, port });
         onStatusChange("stopped");
@@ -57,13 +85,61 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
         await invoke("kill_gateway_process", { installDir: manifest.install_dir, port });
         await new Promise((r) => setTimeout(r, 1500));
         await invoke("start_gateway_bg", { installDir: manifest.install_dir, port });
-        setTimeout(checkStatus, 3000);
+        await new Promise((r) => setTimeout(r, 3000));
+        checkStatus();
       }
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastError(msg);
       console.error(e);
       checkStatus();
     } finally {
       setActionLoading(null);
+    }
+  }
+
+  async function runDiagnose() {
+    setActionLoading("diagnose");
+    setShowDoctorPanel(true);
+    try {
+      const result = await invoke<DoctorResult>("run_doctor");
+      setDoctorResult(result);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastError(`诊断失败: ${msg}`);
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function runFix() {
+    setActionLoading("fix");
+    try {
+      const result = await invoke<CommandResult>("run_doctor_fix");
+      if (result.success) {
+        setLastError(null);
+        setDoctorResult(null);
+        // 修复后重新诊断
+        const newResult = await invoke<DoctorResult>("run_doctor");
+        setDoctorResult(newResult);
+      } else {
+        setLastError(`修复失败: ${result.message}`);
+        setLastErrorHint(result.hint || null);
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastError(`修复失败: ${msg}`);
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function openLogDirectory() {
+    try {
+      const logDir = await invoke<string>("get_log_directory");
+      await invoke("open_folder", { path: logDir });
+    } catch (e) {
+      console.error("打开日志目录失败:", e);
     }
   }
 
@@ -161,8 +237,122 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
           </div>
         </div>
 
+        {/* 错误提示卡片 */}
+        {lastError && (
+          <div className="bg-red-900/20 border border-red-800/50 rounded-xl p-4">
+            <div className="flex items-start justify-between">
+              <div className="flex items-start gap-3">
+                <AlertTriangle size={18} className="text-red-400 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="text-sm text-red-400">{lastError}</p>
+                  {lastErrorHint && (
+                    <p className="text-xs text-red-300/70 mt-1">{lastErrorHint}</p>
+                  )}
+                </div>
+              </div>
+              <button
+                onClick={() => { setLastError(null); setLastErrorHint(null); }}
+                className="text-red-400/50 hover:text-red-400 transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <div className="flex gap-2 mt-3 pl-7">
+              <button
+                onClick={runDiagnose}
+                disabled={actionLoading !== null}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-yellow-900/40 hover:bg-yellow-800/50 text-yellow-400 text-xs rounded-lg transition-colors disabled:opacity-50"
+              >
+                <Stethoscope size={12} />
+                诊断问题
+              </button>
+              <button
+                onClick={runFix}
+                disabled={actionLoading !== null}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-yellow-900/40 hover:bg-yellow-800/50 text-yellow-400 text-xs rounded-lg transition-colors disabled:opacity-50"
+              >
+                <Wrench size={12} />
+                一键修复
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 诊断结果面板 */}
+        {showDoctorPanel && (
+          <div className="bg-gray-900 rounded-xl border border-gray-700 p-4">
+            <div className="flex items-center justify-between mb-3">
+              <h4 className="text-sm font-medium text-gray-200 flex items-center gap-2">
+                <Stethoscope size={16} className="text-yellow-400" />
+                诊断结果
+              </h4>
+              <button
+                onClick={() => { setShowDoctorPanel(false); setDoctorResult(null); }}
+                className="text-gray-500 hover:text-gray-300 transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            
+            {actionLoading === "diagnose" ? (
+              <div className="flex items-center gap-2 text-gray-400 text-sm">
+                <Loader size={14} className="animate-spin" />
+                正在诊断...
+              </div>
+            ) : doctorResult ? (
+              <div className="space-y-2">
+                <div className={`text-sm ${doctorResult.passed ? "text-green-400" : "text-yellow-400"}`}>
+                  {doctorResult.summary}
+                </div>
+                {doctorResult.issues.length > 0 && (
+                  <ul className="text-xs space-y-1 pl-2 border-l-2 border-gray-700">
+                    {doctorResult.issues.map((issue, i) => (
+                      <li key={i} className={`pl-2 ${issue.severity === "error" ? "text-red-400" : "text-yellow-500"}`}>
+                        {issue.message}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="flex gap-2 mt-3">
+                  <button
+                    onClick={runFix}
+                    disabled={actionLoading !== null || doctorResult.passed}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-yellow-900/40 hover:bg-yellow-800/50 text-yellow-400 text-xs rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {actionLoading === "fix" ? <Loader size={12} className="animate-spin" /> : <Wrench size={12} />}
+                    {actionLoading === "fix" ? "修复中..." : "运行修复"}
+                  </button>
+                  <button
+                    onClick={runDiagnose}
+                    disabled={actionLoading !== null}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    <RefreshCw size={12} />
+                    重新诊断
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <p className="text-xs text-gray-500">点击"诊断问题"开始检测</p>
+            )}
+          </div>
+        )}
+
         {/* 快捷操作列表 */}
         <div className="bg-gray-900 rounded-xl border border-gray-700 divide-y divide-gray-800">
+          <ActionRow
+            icon={<Stethoscope size={16} className="text-yellow-400" />}
+            label="诊断与修复"
+            desc="运行 openclaw doctor 检测并修复问题"
+            loading={actionLoading === "diagnose"}
+            onClick={runDiagnose}
+          />
+          <ActionRow
+            icon={<FolderOpen size={16} className="text-blue-400" />}
+            label="查看日志"
+            desc="打开安装器日志目录"
+            onClick={openLogDirectory}
+          />
           <ActionRow
             icon={<FileEdit size={16} />}
             label="修改 API Key"

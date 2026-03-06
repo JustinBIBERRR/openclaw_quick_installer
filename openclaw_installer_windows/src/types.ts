@@ -51,6 +51,48 @@ export type GatewayStatus = "running" | "stopped" | "checking" | "starting";
 
 export type ApiProvider = "anthropic" | "openai" | "deepseek" | "custom";
 
+// 结构化命令执行结果
+export interface CommandResult {
+  success: boolean;
+  code: string;
+  message: string;
+  hint: string | null;
+  command: string;
+  exit_code: number | null;
+  log_path: string | null;
+  retriable: boolean;
+  stdout: string | null;
+  stderr: string | null;
+}
+
+// Doctor 诊断结果
+export interface DoctorResult {
+  success: boolean;
+  passed: boolean;
+  issues: DoctorIssue[];
+  summary: string;
+  log_path: string | null;
+}
+
+export interface DoctorIssue {
+  code: string;
+  message: string;
+  severity: "error" | "warn" | "info";
+  fixable: boolean;
+}
+
+// CLI 能力探测结果
+export interface CliCapabilities {
+  version: string | null;
+  has_onboarding: boolean;
+  has_doctor: boolean;
+  has_gateway: boolean;
+  has_dashboard: boolean;
+  onboarding_flags: string[];
+  doctor_flags: string[];
+  gateway_flags: string[];
+}
+
 export interface ApiProviderConfig {
   id: ApiProvider;
   name: string;
