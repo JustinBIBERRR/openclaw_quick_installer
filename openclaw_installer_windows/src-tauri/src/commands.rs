@@ -699,10 +699,32 @@ fn build_openclaw_config(
             "port": 18789,
             "bind": "loopback",
             "auth": {
-                "mode": "none"
+                "mode": "token",
+                "token": generate_token(),
+                "allowTailscale": false
+            },
+            "tailscale": {
+                "mode": "off",
+                "resetOnExit": false
             }
         }
     })
+}
+
+fn generate_token() -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let mut hasher = DefaultHasher::new();
+    now.as_nanos().hash(&mut hasher);
+    std::process::id().hash(&mut hasher);
+    let h1 = hasher.finish();
+    std::thread::current().id().hash(&mut hasher);
+    (now.as_nanos() ^ 0xDEAD_BEEF).hash(&mut hasher);
+    let h2 = hasher.finish();
+    format!("oc-{:016x}{:016x}", h1, h2)
 }
 
 fn chrono_now_iso() -> String {
@@ -825,7 +847,7 @@ pub async fn start_gateway(
     }
 
     let cmd_str = format!(
-        "{} gateway --port {} --allow-unconfigured --auth none",
+        "{} gateway --port {} --allow-unconfigured",
         oc_cmd.display(), port
     );
     window.emit("gateway-log", serde_json::json!({
@@ -836,7 +858,7 @@ pub async fn start_gateway(
     // 直接启动 openclaw gateway，不注入路径环境变量，让 openclaw 使用默认 ~/.openclaw/
     let mut child_cmd = Command::new("cmd");
     child_cmd.args(["/c", &oc_cmd.to_string_lossy()])
-        .args(["gateway", "--port", &port.to_string(), "--allow-unconfigured", "--auth", "none"])
+        .args(["gateway", "--port", &port.to_string(), "--allow-unconfigured"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     no_window!(child_cmd);
