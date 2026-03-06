@@ -17,6 +17,37 @@ interface Props {
 
 type LaunchPhase = "idle" | "starting" | "done" | "failed" | "diagnosing" | "fixing";
 
+function buildGatewayRecoveryTips(message: string, code: string | null, backendHint: string | null): { hint: string | null; tips: string[] } {
+  const lower = `${code || ""} ${message} ${backendHint || ""}`.toLowerCase();
+  const tips: string[] = [];
+  let hint = backendHint;
+
+  if (lower.includes("too many failed authentication attempts") || lower.includes("authentication attempts")) {
+    hint = "浏览器可能缓存了旧 token。请重启 Gateway 后，用浏览器无痕模式重新打开。";
+    tips.push("先点击“重新启动”重启 Gateway");
+    tips.push("使用浏览器无痕模式打开 Dashboard / Chat");
+  }
+  if (lower.includes("no api key found") || lower.includes("auth-profiles")) {
+    hint = hint || "未找到可用 API Key，请先检查模型配置或 agent 认证配置。";
+    tips.push("先点击“诊断问题”查看 doctor 结论");
+    tips.push("再点击“一键修复”并重新启动");
+  }
+  if (lower.includes("gateway.mode") || lower.includes("mode local") || lower.includes("unconfigured")) {
+    hint = hint || "网关模式或配置未就绪，建议先运行诊断与修复。";
+    tips.push("优先运行 doctor / doctor --fix");
+  }
+  if (lower.includes("cmd_not_found") || lower.includes("找不到 openclaw")) {
+    hint = hint || "系统未发现 openclaw 命令。请重新打开安装器后重试。";
+    tips.push("检查 PATH 与 npm prefix，必要时重新安装 CLI");
+  }
+  if (tips.length === 0) {
+    tips.push("先点击“诊断问题”查看详细原因");
+    tips.push("查看 installer 日志并复制诊断信息反馈");
+  }
+
+  return { hint, tips };
+}
+
 export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: Props) {
   const [phase, setPhase] = useState<LaunchPhase>("idle");
   const [errorMsg, setErrorMsg] = useState("");
@@ -28,6 +59,7 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
   const [doctorResult, setDoctorResult] = useState<DoctorResult | null>(null);
   const [fixResult, setFixResult] = useState<CommandResult | null>(null);
   const [copied, setCopied] = useState(false);
+  const [recoveryTips, setRecoveryTips] = useState<string[]>([]);
   const startedRef = useRef(false);
   const cancelledRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -55,6 +87,7 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
     setErrorHint(null);
     setErrorCode(null);
     setLogPath(null);
+    setRecoveryTips([]);
     setDoctorResult(null);
     setFixResult(null);
     setElapsed(0);
@@ -123,7 +156,9 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
       
       setPhase("failed");
       setErrorMsg(msg);
-      setErrorHint(hint);
+      const guidance = buildGatewayRecoveryTips(msg, code, hint);
+      setErrorHint(guidance.hint);
+      setRecoveryTips(guidance.tips);
       setErrorCode(code);
       setLogPath(logFile);
       addLog("error", `启动失败: ${msg}`);
@@ -202,6 +237,14 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
     }
   }
 
+  async function openRuntimeLogDirectory() {
+    try {
+      await invoke("open_folder", { path: `${manifest.install_dir}\\logs` });
+    } catch (e) {
+      addLog("error", `打开运行日志目录失败: ${e}`);
+    }
+  }
+
   async function copyDiagnosticInfo() {
     const info = [
       `错误代码: ${errorCode || "未知"}`,
@@ -265,7 +308,7 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
       <div>
         <h2 className="text-lg font-semibold text-gray-100">启动 Gateway</h2>
         <p className="text-sm text-gray-400 mt-0.5">
-          启动本地 AI 网关，完成后将自动打开浏览器
+          启动本地 AI 网关，成功后可点击按钮打开浏览器
         </p>
       </div>
 
@@ -326,6 +369,16 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
                 )}
               </div>
             </div>
+            {recoveryTips.length > 0 && (
+              <div className="bg-gray-800 rounded-lg p-3">
+                <p className="text-xs text-gray-400 font-medium mb-1">建议操作：</p>
+                <ul className="text-xs text-gray-500 space-y-1 pl-4 list-disc">
+                  {recoveryTips.map((tip, i) => (
+                    <li key={i}>{tip}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
             
             {doctorResult && !doctorResult.passed && (
               <div className="bg-gray-800 rounded-lg p-3 space-y-2">
@@ -432,7 +485,14 @@ export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: P
                   className="flex items-center gap-1.5 px-2 py-1.5 text-gray-500 hover:text-gray-300 text-xs rounded transition-colors"
                 >
                   <FolderOpen size={12} />
-                  查看日志
+                  查看 installer 日志
+                </button>
+                <button
+                  onClick={openRuntimeLogDirectory}
+                  className="flex items-center gap-1.5 px-2 py-1.5 text-gray-500 hover:text-gray-300 text-xs rounded transition-colors"
+                >
+                  <FolderOpen size={12} />
+                  查看运行日志
                 </button>
                 <button
                   onClick={copyDiagnosticInfo}

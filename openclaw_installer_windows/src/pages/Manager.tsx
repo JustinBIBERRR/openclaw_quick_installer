@@ -19,6 +19,23 @@ interface Props {
   onManifestChange?: (m: AppManifest) => void;
 }
 
+function buildManagerRecoveryHint(message: string, backendHint: string | null): string | null {
+  const lower = `${message} ${backendHint || ""}`.toLowerCase();
+  if (lower.includes("too many failed authentication attempts") || lower.includes("authentication attempts")) {
+    return "浏览器可能缓存了旧 token。请先重启 Gateway，并使用无痕模式重新打开 Chat。";
+  }
+  if (lower.includes("no api key found") || lower.includes("auth-profiles")) {
+    return backendHint || "未找到可用 API Key。请先运行诊断/修复，再检查模型配置。";
+  }
+  if (lower.includes("gateway.mode") || lower.includes("mode local") || lower.includes("unconfigured")) {
+    return backendHint || "网关模式或配置未就绪。建议先运行诊断与修复。";
+  }
+  if (lower.includes("cmd_not_found") || lower.includes("找不到 openclaw")) {
+    return backendHint || "系统未发现 openclaw 命令。请重新打开安装器并检查 PATH。";
+  }
+  return backendHint;
+}
+
 export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChange }: Props) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
@@ -62,7 +79,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
         });
         if (!result.success) {
           setLastError(result.message);
-          setLastErrorHint(result.hint);
+          setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint));
           onStatusChange("stopped");
           return;
         }
@@ -97,7 +114,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
         const result = await invoke<CommandResult>("start_gateway_bg", { installDir: manifest.install_dir, port });
         if (!result.success) {
           setLastError(result.message);
-          setLastErrorHint(result.hint);
+          setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint));
           onStatusChange("stopped");
           return;
         }
@@ -169,6 +186,14 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
     }
   }
 
+  async function openRuntimeLogDirectory() {
+    try {
+      await invoke("open_folder", { path: `${manifest.install_dir}\\logs` });
+    } catch (e) {
+      console.error("打开运行日志目录失败:", e);
+    }
+  }
+
   const providerLabel: Record<string, string> = {
     anthropic: "Anthropic Claude",
     openai: "OpenAI GPT",
@@ -213,10 +238,20 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
               <>
                 <button
                   onClick={async () => {
-                    if (cliCaps?.has_dashboard) {
-                      await invoke("run_dashboard");
-                    } else {
-                      await invoke("open_url", { url: chatUrl });
+                    try {
+                      if (cliCaps?.has_dashboard) {
+                        const result = await invoke<CommandResult>("run_dashboard");
+                        if (!result.success) {
+                          setLastError(result.message);
+                          setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint || null));
+                        }
+                      } else {
+                        await invoke("open_url", { url: chatUrl });
+                      }
+                    } catch (e) {
+                      const msg = e instanceof Error ? e.message : String(e);
+                      setLastError(msg);
+                      setLastErrorHint(buildManagerRecoveryHint(msg, null));
                     }
                   }}
                   className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-brand-500 hover:bg-brand-600 text-gray-950 font-semibold text-sm rounded-lg transition-colors"
@@ -381,9 +416,15 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
           />
           <ActionRow
             icon={<FolderOpen size={16} className="text-blue-400" />}
-            label="查看日志"
-            desc="打开安装器日志目录"
+            label="查看 installer 日志"
+            desc="%USERPROFILE%\\.openclaw\\installer-logs"
             onClick={openLogDirectory}
+          />
+          <ActionRow
+            icon={<FolderOpen size={16} className="text-blue-400" />}
+            label="查看运行日志"
+            desc="<install_dir>\\logs"
+            onClick={openRuntimeLogDirectory}
           />
           <ActionRow
             icon={<FileEdit size={16} />}

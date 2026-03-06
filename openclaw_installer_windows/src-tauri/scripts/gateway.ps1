@@ -250,3 +250,4 @@ elseif ($Action -eq "status") {
     Write-Output "[RESULT]failed"
     exit 1
 }
+

@@ -146,6 +146,7 @@ if (-not $nodeOk) {
         }
         if (-not $downloaded) {
             Log-Error "无法下载 Node.js 安装包，请检查网络或手动从 https://nodejs.org 安装后重试"
+            Write-Output "[MANUAL_DOWNLOAD]https://nodejs.org/en/download"
             Dbg "install.ps1:msi-download-fail" "msi download failed" @{}
             exit 1
         }
@@ -219,6 +220,13 @@ if (-not $ocAlreadyInstalled) {
         Dbg "install.ps1:npm-install-done" "npm install finished" @{exitCode=$npmExitCode;stderrLen=$errContent.Length}
 
         if ($npmExitCode -ne 0) {
+            if ($errContent -match "EACCES|EPERM|permission denied") {
+                Log-Error "检测到 npm 权限不足（EACCES/EPERM），请以管理员权限运行安装器后重试"
+            } elseif ($errContent -match "ENOTFOUND|ECONNRESET|ETIMEDOUT|network") {
+                Log-Error "检测到 npm 网络错误，请检查网络/代理后重试"
+            } elseif ($errContent -match "openclaw@latest|empty package|placeholder") {
+                Log-Error "检测到 npm 包源异常，请确认安装源可用后重试"
+            }
             Log-Error "npm install 失败（退出码 $npmExitCode）"
             exit 1
         }

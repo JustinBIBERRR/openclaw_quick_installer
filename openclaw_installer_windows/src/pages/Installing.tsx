@@ -30,6 +30,7 @@ export default function Installing({ manifest, envEstimate, logs, addLog, onDone
   const [phase, setPhase] = useState<InstallPhase>("idle");
   const [currentStep, setCurrentStep] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
+  const [errorHint, setErrorHint] = useState<string | null>(null);
   const [manualDownloadUrl, setManualDownloadUrl] = useState("");
   const startedRef = useRef(false);
 
@@ -62,6 +63,7 @@ export default function Installing({ manifest, envEstimate, logs, addLog, onDone
   async function startInstall() {
     setPhase("running");
     setErrorMsg("");
+    setErrorHint(null);
     addLog("info", "开始安装流程...");
 
     if (!isTauri) {
@@ -89,7 +91,22 @@ export default function Installing({ manifest, envEstimate, logs, addLog, onDone
         installDir: manifest?.install_dir || "C:\\OpenClaw",
       });
       if (!result.success) {
-        throw new Error(result.message);
+        const fallbackMsg = result.message || "安装失败";
+        const msg = result.code === "NPM_PERMISSION_DENIED"
+          ? "OpenClaw CLI 安装失败（npm 权限不足）"
+          : result.code === "NPM_NETWORK_ERROR"
+            ? "OpenClaw CLI 安装失败（网络异常）"
+            : result.code === "OPENCLAW_NOT_FOUND" || result.code === "INSTALL_VERIFY_FAILED"
+              ? "安装后未找到 openclaw 命令"
+              : result.code === "NODE_RUNTIME_NOT_READY"
+                ? "Node.js 运行时未就绪"
+                : fallbackMsg;
+        setPhase("failed");
+        setErrorMsg(msg);
+        setErrorHint(result.hint || null);
+        addLog("error", `安装失败: ${msg}`);
+        if (result.hint) addLog("warn", result.hint);
+        return;
       }
       setPhase("done");
       addLog("ok", "OpenClaw CLI 安装完成！");
@@ -106,6 +123,7 @@ export default function Installing({ manifest, envEstimate, logs, addLog, onDone
               : raw;
       setPhase("failed");
       setErrorMsg(msg);
+      setErrorHint("请查看日志后重试；如提示命令未找到，可重新打开安装器刷新 PATH");
       addLog("error", `安装失败: ${msg}`);
     }
   }
@@ -164,14 +182,14 @@ export default function Installing({ manifest, envEstimate, logs, addLog, onDone
             <div>
               <p className="text-sm font-medium text-yellow-300">Node.js 运行时下载失败，请手动下载</p>
               <p className="text-xs text-yellow-400/70 mt-1">
-                您的网络环境无法自动下载 Node.js 运行时。请用浏览器手动下载后放到安装目录，然后点击"重试"。
+                您的网络环境无法自动下载 Node.js 安装包。请先手动安装 Node.js 18+，然后点击"重试"。
               </p>
             </div>
           </div>
           <div className="bg-gray-900/60 rounded-md p-3 text-xs text-gray-300 space-y-1.5">
-            <p>1. 点击下方按钮，在 GitHub Release 页面下载 <code className="text-yellow-300">node-v22-win-x64.zip</code></p>
-            <p>2. 将下载的 zip 文件放到安装目录：<code className="text-brand-400 break-all">{manifest?.install_dir || "C:\\OpenClaw"}</code></p>
-            <p>3. 点击下方"重试"按钮继续安装</p>
+            <p>1. 点击下方按钮打开 Node.js 官方下载页</p>
+            <p>2. 安装 Node.js 18+（建议 LTS）并重新打开安装器</p>
+            <p>3. 点击下方"重试"按钮继续安装 OpenClaw CLI</p>
           </div>
           <button
             onClick={() => {
@@ -197,6 +215,9 @@ export default function Installing({ manifest, envEstimate, logs, addLog, onDone
             <p className="text-sm text-red-400 flex-1 mr-4 truncate">
               {phase === "manual_download" ? "请手动下载 Node.js 后重试" : errorMsg}
             </p>
+            {errorHint && phase !== "manual_download" && (
+              <p className="text-xs text-yellow-500 mr-4 max-w-[420px] truncate">{errorHint}</p>
+            )}
             <button
               onClick={() => { setPhase("idle"); startedRef.current = false; startInstall(); }}
               className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm rounded-lg transition-colors"

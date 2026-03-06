@@ -610,12 +610,71 @@ pub async fn start_install(
     }
 
     if let Err(script_err) = install_result.unwrap() {
+        let npm_err_path = Path::new(&install_dir).join("logs").join("npm-install-err.log");
+        let npm_err = std::fs::read_to_string(&npm_err_path).unwrap_or_default();
+        let npm_err_lower = npm_err.to_lowercase();
+
+        let (code, message, hint) = if npm_err_lower.contains("eacces")
+            || npm_err_lower.contains("eperm")
+            || npm_err_lower.contains("permission denied")
+        {
+            (
+                "NPM_PERMISSION_DENIED",
+                "OpenClaw CLI 安装失败（npm 权限不足）".to_string(),
+                Some("请使用管理员权限运行安装器后重试；若仍失败，请先手动安装 Node.js 再重试".to_string()),
+            )
+        } else if npm_err_lower.contains("enotfound")
+            || npm_err_lower.contains("econnreset")
+            || npm_err_lower.contains("etimedout")
+            || npm_err_lower.contains("network")
+        {
+            (
+                "NPM_NETWORK_ERROR",
+                "OpenClaw CLI 安装失败（网络问题）".to_string(),
+                Some("请检查网络/代理后重试；必要时可先手动安装 Node.js".to_string()),
+            )
+        } else if !check_node_installed() {
+            (
+                "NODE_RUNTIME_NOT_READY",
+                "Node.js 安装或识别失败".to_string(),
+                Some("请确认 Node.js 18+ 已安装并可执行 node --version，然后重新打开安装器".to_string()),
+            )
+        } else if find_openclaw_cmd().is_none() {
+            (
+                "OPENCLAW_NOT_FOUND",
+                "安装后仍找不到 openclaw 命令".to_string(),
+                Some(build_openclaw_discovery_hint()),
+            )
+        } else {
+            (
+                "INSTALL_SCRIPT_FAILED",
+                script_err.clone(),
+                Some("请检查安装日志后重试".to_string()),
+            )
+        };
+
         return Ok(CommandResult {
             success: false,
-            code: "INSTALL_SCRIPT_FAILED".into(),
-            message: script_err,
-            hint: Some("请检查网络、管理员权限或日志后重试".into()),
+            code: code.into(),
+            message,
+            hint,
             command: "install.ps1".into(),
+            exit_code: None,
+            log_path: Some(Path::new(&install_dir).join("logs").to_string_lossy().into_owned()),
+            retriable: true,
+            stdout: None,
+            stderr: if npm_err.is_empty() { None } else { Some(npm_err) },
+        });
+    }
+
+    refresh_path();
+    if find_openclaw_cmd().is_none() {
+        return Ok(CommandResult {
+            success: false,
+            code: "INSTALL_VERIFY_FAILED".into(),
+            message: "安装流程完成，但未发现 openclaw 命令".into(),
+            hint: Some(build_openclaw_discovery_hint()),
+            command: "openclaw --version".into(),
             exit_code: None,
             log_path: Some(Path::new(&install_dir).join("logs").to_string_lossy().into_owned()),
             retriable: true,
@@ -820,6 +879,33 @@ fn find_openclaw_cmd() -> Option<PathBuf> {
     None
 }
 
+fn build_openclaw_discovery_hint() -> String {
+    let appdata = std::env::var("APPDATA").unwrap_or_default();
+    let appdata_npm = if appdata.is_empty() {
+        "(未获取 APPDATA)".to_string()
+    } else {
+        format!("{}\\npm", appdata)
+    };
+
+    let mut npm_prefix = "(获取失败)".to_string();
+    let mut cmd = Command::new("npm");
+    cmd.args(["config", "get", "prefix"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    no_window!(cmd);
+    if let Ok(o) = cmd.output() {
+        let p = String::from_utf8_lossy(&o.stdout).trim().to_string();
+        if !p.is_empty() {
+            npm_prefix = p;
+        }
+    }
+
+    format!(
+        "未找到 openclaw 命令。已检查 PATH、{}，npm prefix={}。请重新打开安装器/终端后重试，或手动确认上述目录在 PATH 中。",
+        appdata_npm, npm_prefix
+    )
+}
+
 /// 刷新当前进程的 PATH 环境变量（从注册表读最新值）
 fn refresh_path() {
     let mut cmd = Command::new("powershell");
@@ -871,7 +957,7 @@ fn run_openclaw_cmd(args: &[&str]) -> CommandResult {
             &args.join(" "),
             "CMD_NOT_FOUND",
             "找不到 openclaw 命令",
-            Some("请先完成安装步骤，或检查 PATH 环境变量"),
+            Some(&build_openclaw_discovery_hint()),
             true,
         ),
     };
@@ -905,11 +991,26 @@ fn run_openclaw_cmd(args: &[&str]) -> CommandResult {
                     stderr: if stderr.is_empty() { None } else { Some(stderr) },
                 }
             } else {
-                let hint = if stderr.contains("ECONNREFUSED") || stderr.contains("network") {
+                let stderr_lower = stderr.to_lowercase();
+                let hint = if stderr.contains("ECONNREFUSED") || stderr_lower.contains("network") {
                     Some("网络连接问题，请检查网络后重试")
-                } else if stderr.contains("permission") || stderr.contains("EPERM") {
+                } else if stderr_lower.contains("permission denied")
+                    || stderr.contains("EPERM")
+                    || stderr.contains("EACCES")
+                {
                     Some("权限不足，请尝试以管理员身份运行")
-                } else if stderr.contains("config") || stderr.contains("openclaw.json") {
+                } else if stderr_lower.contains("too many failed authentication attempts")
+                    || stderr_lower.contains("authentication attempts")
+                {
+                    Some("浏览器可能缓存了旧 token。请重启 Gateway，并使用浏览器无痕模式重新打开 Dashboard")
+                } else if stderr_lower.contains("no api key found") {
+                    Some("未找到可用 API Key。请检查模型提供商配置，或运行 doctor/doctor --fix")
+                } else if stderr_lower.contains("gateway.mode")
+                    || stderr_lower.contains("mode local")
+                    || stderr_lower.contains("unconfigured")
+                {
+                    Some("网关模式或配置未就绪。建议先运行 doctor/doctor --fix，再重试启动")
+                } else if stderr_lower.contains("config") || stderr_lower.contains("openclaw.json") {
                     Some("配置文件问题，可尝试运行 openclaw doctor --fix")
                 } else {
                     None
