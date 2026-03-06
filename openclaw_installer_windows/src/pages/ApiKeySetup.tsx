@@ -3,10 +3,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { Eye, EyeOff, Loader, CheckCircle, AlertCircle } from "lucide-react";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-import type { AppManifest, ApiProvider, ApiProviderConfig } from "../types";
+import type { AppManifest, ApiProvider, ApiProviderConfig, CliCapabilities, CommandResult } from "../types";
 
 interface Props {
   manifest: AppManifest | null;
+  cliCaps: CliCapabilities | null;
   onDone: (provider: string, keyConfigured: boolean) => void;
 }
 
@@ -47,7 +48,7 @@ const PROVIDERS: ApiProviderConfig[] = [
 
 type ValidateState = "idle" | "validating" | "ok" | "warn" | "error";
 
-export default function ApiKeySetup({ manifest, onDone }: Props) {
+export default function ApiKeySetup({ manifest, cliCaps, onDone }: Props) {
   const [provider, setProvider] = useState<ApiProvider>("anthropic");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -55,6 +56,7 @@ export default function ApiKeySetup({ manifest, onDone }: Props) {
   const [validateState, setValidateState] = useState<ValidateState>("idle");
   const [validateMsg, setValidateMsg] = useState("");
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   const pConfig = PROVIDERS.find((p) => p.id === provider)!;
 
@@ -63,9 +65,19 @@ export default function ApiKeySetup({ manifest, onDone }: Props) {
     (pConfig.keyPrefix === "" || apiKey.startsWith(pConfig.keyPrefix));
 
   const effectiveBaseUrl = baseUrl || pConfig.defaultBaseUrl;
+  const baseUrlValid =
+    provider !== "custom" ||
+    (() => {
+      try {
+        const u = new URL(effectiveBaseUrl);
+        return u.protocol === "http:" || u.protocol === "https:";
+      } catch {
+        return false;
+      }
+    })();
 
   async function validate() {
-    if (!keyValid) return;
+    if (!keyValid || !baseUrlValid) return;
     setValidateState("validating");
     setValidateMsg("正在验证连通性...");
 
@@ -99,19 +111,39 @@ export default function ApiKeySetup({ manifest, onDone }: Props) {
 
   async function save(skip = false) {
     setSaving(true);
+    setSaveError(null);
     try {
       if (isTauri) {
-        await invoke("save_api_key", {
-          installDir: manifest?.install_dir || "C:\\OpenClaw",
-          provider: skip ? "skip" : provider,
-          apiKey: skip ? "" : apiKey,
-          baseUrl: skip ? "" : effectiveBaseUrl,
-          model: skip ? "" : pConfig.models[0] || "",
-        });
+        // 优先使用官方 onboarding，低版本才回退到最小配置写入。
+        if (!skip && cliCaps?.has_onboarding) {
+          const onboardingResult = await invoke<CommandResult>("run_onboarding", {
+            apiKey,
+            provider,
+          });
+          if (!onboardingResult.success) {
+            setSaveError(onboardingResult.message);
+            setSaving(false);
+            return;
+          }
+        } else {
+          const result = await invoke<CommandResult>("save_api_key", {
+            installDir: manifest?.install_dir || "C:\\OpenClaw",
+            provider: skip ? "skip" : provider,
+            apiKey: skip ? "" : apiKey,
+            baseUrl: skip ? "" : effectiveBaseUrl,
+            model: skip ? "" : pConfig.models[0] || "",
+          });
+          if (!result.success) {
+            setSaveError(result.message);
+            setSaving(false);
+            return;
+          }
+        }
       }
       onDone(skip ? "skip" : provider, !skip);
     } catch (e) {
-      console.error(e);
+      const msg = e instanceof Error ? e.message : String(e);
+      setSaveError(msg);
     } finally {
       setSaving(false);
     }
@@ -187,6 +219,11 @@ export default function ApiKeySetup({ manifest, onDone }: Props) {
               Key 格式似乎不正确，{pConfig.name} 的 Key 应以 {pConfig.keyPrefix} 开头
             </p>
           )}
+          {provider === "custom" && baseUrl && !baseUrlValid && (
+            <p className="text-xs text-yellow-500 mt-1">
+              Base URL 格式无效，请输入 http(s) 开头的完整地址
+            </p>
+          )}
         </div>
 
         {/* 验证状态 */}
@@ -207,7 +244,7 @@ export default function ApiKeySetup({ manifest, onDone }: Props) {
 
         <button
           onClick={validate}
-          disabled={!keyValid || validateState === "validating"}
+          disabled={!keyValid || !baseUrlValid || validateState === "validating"}
           className="self-start px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40
             text-gray-300 rounded border border-gray-600 transition-colors"
         >
@@ -219,6 +256,9 @@ export default function ApiKeySetup({ manifest, onDone }: Props) {
 
       {/* 底部操作 */}
       <div className="flex items-center justify-between flex-shrink-0">
+        {saveError && (
+          <p className="text-xs text-red-400 max-w-[60%] truncate">{saveError}</p>
+        )}
         <button
           onClick={() => save(true)}
           disabled={saving}
@@ -228,7 +268,7 @@ export default function ApiKeySetup({ manifest, onDone }: Props) {
         </button>
         <button
           onClick={() => save(false)}
-          disabled={saving || !keyValid || validateState === "error"}
+          disabled={saving || !keyValid || !baseUrlValid || validateState === "error"}
           className="flex items-center gap-2 px-6 py-2 bg-brand-500 hover:bg-brand-600
             disabled:bg-gray-700 disabled:text-gray-500
             text-gray-950 font-semibold text-sm rounded-lg transition-colors"

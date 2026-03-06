@@ -111,18 +111,16 @@ if ($Action -eq "start") {
     "" | Out-File $STDOUT_LOG -Encoding utf8 -Force
     "" | Out-File $STDERR_LOG -Encoding utf8 -Force
 
-    $CONFIG_FILE = "$InstallDir\data\openclaw.json"
-    $env:OPENCLAW_CONFIG_PATH = $CONFIG_FILE
-    $env:OPENCLAW_HOME = "$InstallDir\data"
+    # 统一使用 OpenClaw 官方默认配置目录 (~/.openclaw)
 
     # .cmd 文件需要通过 cmd.exe 启动，否则 Start-Process + Redirect 可能失败
     $isCmdFile = $ocExe.EndsWith(".cmd")
     if ($isCmdFile) {
         $startExe = "cmd.exe"
-        $startArgs = @("/c", "`"$ocExe`"", "gateway", "--port", "$Port", "--allow-unconfigured", "--auth", "none")
+        $startArgs = @("/c", "`"$ocExe`"", "gateway", "--port", "$Port", "--allow-unconfigured")
     } else {
         $startExe = $ocExe
-        $startArgs = @("gateway", "--port", "$Port", "--allow-unconfigured", "--auth", "none")
+        $startArgs = @("gateway", "--port", "$Port", "--allow-unconfigured")
     }
 
     Log-Info "Launch: $startExe $($startArgs -join ' ')"

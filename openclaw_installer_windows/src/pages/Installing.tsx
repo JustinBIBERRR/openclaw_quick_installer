@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Loader, RefreshCw, ExternalLink, FolderSearch } from "lucide-react";
 import LogScroller from "../components/LogScroller";
-import type { AppManifest, LogEntry } from "../types";
+import type { AppManifest, LogEntry, CommandResult } from "../types";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -82,13 +82,25 @@ export default function Installing({ manifest, logs, addLog, onDone }: Props) {
     }
 
     try {
-      await invoke("start_install", {
+      const result = await invoke<CommandResult>("start_install", {
         installDir: manifest?.install_dir || "C:\\OpenClaw",
       });
+      if (!result.success) {
+        throw new Error(result.message);
+      }
       setPhase("done");
       addLog("ok", "OpenClaw CLI 安装完成！");
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const raw = e instanceof Error ? e.message : String(e);
+      const msg = raw.toLowerCase().includes("npm")
+        ? "OpenClaw CLI 安装失败（npm 阶段）"
+        : raw.toLowerCase().includes("node")
+          ? "Node.js 安装失败"
+          : raw.toLowerCase().includes("msi")
+            ? "Node.js MSI 安装失败"
+            : raw.toLowerCase().includes("version")
+              ? "OpenClaw 安装验证失败"
+              : raw;
       setPhase("failed");
       setErrorMsg(msg);
       addLog("error", `安装失败: ${msg}`);

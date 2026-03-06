@@ -535,7 +535,7 @@ pub async fn start_install(
     window: Window,
     app: AppHandle,
     install_dir: String,
-) -> Result<(), String> {
+) -> Result<CommandResult, String> {
     let script = get_script_path(&app, "install.ps1")?;
 
     // #region agent log
@@ -570,11 +570,36 @@ pub async fn start_install(
         ("OPENCLAW_INSTALL_DIR".to_string(), install_dir.clone()),
     ];
 
-    tokio::task::spawn_blocking(move || {
+    let install_result = tokio::task::spawn_blocking(move || {
         run_ps_script_streaming_sync(window, script, env_pairs, "install-log")
     })
     .await
-    .map_err(|e| e.to_string())??;
+    .map_err(|e| e.to_string());
+
+    if let Err(join_err) = install_result {
+        return Ok(CommandResult::error(
+            "install.ps1",
+            "INSTALL_TASK_JOIN_ERROR",
+            &format!("安装任务执行失败: {join_err}"),
+            Some("请重试或查看日志目录"),
+            true,
+        ));
+    }
+
+    if let Err(script_err) = install_result.unwrap() {
+        return Ok(CommandResult {
+            success: false,
+            code: "INSTALL_SCRIPT_FAILED".into(),
+            message: script_err,
+            hint: Some("请检查网络、管理员权限或日志后重试".into()),
+            command: "install.ps1".into(),
+            exit_code: None,
+            log_path: Some(Path::new(&install_dir).join("logs").to_string_lossy().into_owned()),
+            retriable: true,
+            stdout: None,
+            stderr: None,
+        });
+    }
 
     let mut manifest = read_manifest(&install_dir).unwrap_or_default();
     if !manifest.steps_done.contains(&"openclaw_installed".to_string()) {
@@ -582,7 +607,18 @@ pub async fn start_install(
     }
     write_manifest(&manifest)?;
 
-    Ok(())
+    Ok(CommandResult {
+        success: true,
+        code: "OK".into(),
+        message: "安装完成".into(),
+        hint: None,
+        command: "install.ps1".into(),
+        exit_code: Some(0),
+        log_path: Some(Path::new(&install_dir).join("logs").to_string_lossy().into_owned()),
+        retriable: false,
+        stdout: None,
+        stderr: None,
+    })
 }
 
 /// 验证 API Key 连通性
@@ -651,14 +687,14 @@ pub fn save_api_key(
     api_key: String,
     base_url: String,
     model: String,
-) -> Result<(), String> {
+) -> Result<CommandResult, String> {
     let mut manifest = read_manifest(&install_dir).unwrap_or_default();
 
     if provider == "skip" {
         manifest.api_provider = "skip".into();
         manifest.api_key_configured = false;
         write_manifest(&manifest)?;
-        return Ok(());
+        return Ok(CommandResult::ok("save_api_key", "已跳过 API Key 配置"));
     }
 
     let config_dir = openclaw_config_dir()?;
@@ -672,7 +708,23 @@ pub fn save_api_key(
         serde_json::json!({})
     };
 
-    let new_provider = build_openclaw_config(&provider, &api_key, &base_url, &model);
+    // 只写最小必要 provider 信息，尽量减少对官方 schema 的覆盖。
+    let provider_id = match provider.as_str() {
+        "anthropic" => "anthropic",
+        "deepseek" => "deepseek",
+        _ => "openai",
+    };
+    let new_provider = serde_json::json!({
+        "models": {
+            "providers": {
+                provider_id: {
+                    "apiKey": api_key,
+                    "baseUrl": base_url,
+                    "models": [{ "id": model, "name": model }]
+                }
+            }
+        }
+    });
     merge_json(&mut config, &new_provider);
 
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
@@ -685,7 +737,18 @@ pub fn save_api_key(
         manifest.steps_done.push("config_written".into());
     }
     write_manifest(&manifest)?;
-    Ok(())
+    Ok(CommandResult {
+        success: true,
+        code: "OK".into(),
+        message: "配置已保存".into(),
+        hint: None,
+        command: "save_api_key".into(),
+        exit_code: Some(0),
+        log_path: Some(config_path.to_string_lossy().into_owned()),
+        retriable: false,
+        stdout: None,
+        stderr: None,
+    })
 }
 
 /// 深度合并两个 JSON Value（src 覆盖到 dst）
@@ -698,126 +761,6 @@ fn merge_json(dst: &mut serde_json::Value, src: &serde_json::Value) {
         }
         (dst, src) => *dst = src.clone(),
     }
-}
-
-fn build_openclaw_config(
-    provider: &str,
-    api_key: &str,
-    base_url: &str,
-    model: &str,
-) -> serde_json::Value {
-    let provider_id = match provider {
-        "anthropic" => "anthropic",
-        "deepseek" => "deepseek",
-        _ => "openai",
-    };
-
-    let primary_model = format!("{}/{}", provider_id, model);
-
-    let profile = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".into());
-    let workspace = format!("{}/.openclaw/workspace", profile.replace('\\', "/"));
-
-    let now = chrono_now_iso();
-
-    serde_json::json!({
-        "meta": {
-            "lastTouchedAt": now,
-            "createdBy": "openclaw-installer"
-        },
-        "wizard": {
-            "lastRunAt": now,
-            "lastRunCommand": "installer",
-            "lastRunMode": "local"
-        },
-        "models": {
-            "mode": "merge",
-            "providers": {
-                provider_id: {
-                    "apiKey": api_key,
-                    "baseUrl": base_url,
-                    "models": [{ "id": model, "name": model }]
-                }
-            }
-        },
-        "agents": {
-            "defaults": {
-                "workspace": workspace,
-                "model": {
-                    "primary": primary_model
-                },
-                "compaction": {
-                    "mode": "safeguard"
-                },
-                "maxConcurrent": 3
-            }
-        },
-        "messages": {
-            "ackReactionScope": "group-mentions"
-        },
-        "commands": {
-            "native": "auto",
-            "text": true,
-            "bash": false,
-            "config": false,
-            "debug": false,
-            "restart": false
-        },
-        "session": {
-            "scope": "per-sender",
-            "reset": {
-                "mode": "daily",
-                "atHour": 4,
-                "idleMinutes": 60
-            },
-            "resetTriggers": ["/new", "/reset"]
-        },
-        "gateway": {
-            "mode": "local",
-            "port": 18789,
-            "bind": "loopback",
-            "auth": {
-                "mode": "token",
-                "allowTailscale": false
-            },
-            "tailscale": {
-                "mode": "off",
-                "resetOnExit": false
-            }
-        }
-    })
-}
-
-fn chrono_now_iso() -> String {
-    let d = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = d.as_secs();
-    let (y, m, day, h, min, s) = unix_to_utc(secs);
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", y, m, day, h, min, s)
-}
-
-fn unix_to_utc(secs: u64) -> (u64, u64, u64, u64, u64, u64) {
-    let s = secs % 60;
-    let total_min = secs / 60;
-    let min = total_min % 60;
-    let total_h = total_min / 60;
-    let h = total_h % 24;
-    let mut days = total_h / 24;
-    let mut y = 1970u64;
-    loop {
-        let ydays = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
-        if days < ydays { break; }
-        days -= ydays;
-        y += 1;
-    }
-    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
-    let mdays = [31, if leap {29} else {28}, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-    let mut m = 0u64;
-    for (i, &md) in mdays.iter().enumerate() {
-        if days < md as u64 { m = i as u64 + 1; break; }
-        days -= md as u64;
-    }
-    (y, m, days + 1, h, min, s)
 }
 
 /// 在系统 PATH 中查找 openclaw.cmd（Rust 实现，不依赖 PowerShell）
@@ -1184,7 +1127,7 @@ pub async fn run_onboarding(api_key: String, provider: String) -> CommandResult 
 
 /// 使用官方命令启动 Gateway
 #[tauri::command]
-pub async fn run_gateway_start(window: Window, port: u16) -> CommandResult {
+pub async fn run_gateway_start(window: Window, install_dir: String, port: u16) -> CommandResult {
     let port_str = port.to_string();
     
     window.emit("gateway-log", serde_json::json!({
@@ -1192,6 +1135,7 @@ pub async fn run_gateway_start(window: Window, port: u16) -> CommandResult {
         "message": "正在启动 Gateway..."
     })).ok();
 
+    let install_dir_for_manifest = install_dir.clone();
     let result = tokio::task::spawn_blocking(move || {
         refresh_path();
         
@@ -1222,6 +1166,16 @@ pub async fn run_gateway_start(window: Window, port: u16) -> CommandResult {
                 for _ in 0..45 {
                     std::thread::sleep(Duration::from_secs(2));
                     if tcp_port_open(port) {
+                        let mut manifest = read_manifest(&install_dir_for_manifest).unwrap_or_default();
+                        manifest.install_dir = install_dir_for_manifest.clone();
+                        manifest.gateway_port = port;
+                        manifest.gateway_pid = Some(pid);
+                        manifest.phase = "complete".into();
+                        if !manifest.steps_done.contains(&"gateway_started".to_string()) {
+                            manifest.steps_done.push("gateway_started".into());
+                        }
+                        let _ = write_manifest(&manifest);
+                        let _ = create_desktop_shortcut(&install_dir_for_manifest);
                         return CommandResult {
                             success: true,
                             code: "OK".into(),
@@ -1322,146 +1276,9 @@ pub async fn start_gateway(
     _app: AppHandle,
     install_dir: String,
     port: u16,
-) -> Result<AppManifest, String> {
-    // 先刷新 PATH
-    refresh_path();
-
-    window.emit("gateway-log", serde_json::json!({
-        "level": "info",
-        "message": "查找 openclaw 命令..."
-    })).ok();
-
-    let oc_cmd = find_openclaw_cmd()
-        .ok_or_else(|| "找不到 openclaw.cmd，请确认已完成安装步骤".to_string())?;
-
-    window.emit("gateway-log", serde_json::json!({
-        "level": "ok",
-        "message": format!("openclaw: {}", oc_cmd.display())
-    })).ok();
-
-    // 先检测是否已经在运行
-    if tcp_port_open(port) {
-        window.emit("gateway-log", serde_json::json!({
-            "level": "ok",
-            "message": format!("Gateway 已在运行 (port {})", port)
-        })).ok();
-        let mut manifest = read_manifest(&install_dir).unwrap_or_default();
-        manifest.phase = "complete".into();
-        manifest.gateway_port = port;
-        write_manifest(&manifest)?;
-        return Ok(manifest);
-    }
-
-    let cmd_str = format!(
-        "{} gateway --port {} --allow-unconfigured",
-        oc_cmd.display(), port
-    );
-    window.emit("gateway-log", serde_json::json!({
-        "level": "info",
-        "message": format!("执行: {}", cmd_str)
-    })).ok();
-
-    // 直接启动 openclaw gateway，不注入路径环境变量，让 openclaw 使用默认 ~/.openclaw/
-    let mut child_cmd = Command::new("cmd");
-    child_cmd.args(["/c", &oc_cmd.to_string_lossy()])
-        .args(["gateway", "--port", &port.to_string(), "--allow-unconfigured"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    no_window!(child_cmd);
-
-    let mut child = child_cmd.spawn()
-        .map_err(|e| format!("启动 openclaw 失败: {}", e))?;
-
-    let pid = child.id();
-    window.emit("gateway-log", serde_json::json!({
-        "level": "ok",
-        "message": format!("进程已启动 (PID: {})", pid)
-    })).ok();
-
-    // 记录 PID 到 manifest
-    let mut manifest = read_manifest(&install_dir).unwrap_or_default();
-    manifest.install_dir = install_dir.clone();
-    manifest.gateway_pid = Some(pid);
-    manifest.gateway_port = port;
-    write_manifest(&manifest).ok();
-
-    // stdout → 后台线程 → 实时 emit 到 UI
-    let stdout = child.stdout.take().unwrap();
-    let win_out = window.clone();
-    let port_for_detect = port;
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stdout);
-        for line in reader.lines().map_while(Result::ok) {
-            let t = line.trim().to_string();
-            if !t.is_empty() {
-                let level = if t.to_lowercase().contains("error") || t.to_lowercase().contains("err!") {
-                    "error"
-                } else if t.to_lowercase().contains("warn") {
-                    "warn"
-                } else if t.to_lowercase().contains("listening") || t.to_lowercase().contains("ready") || t.to_lowercase().contains("started") {
-                    "ok"
-                } else {
-                    "dim"
-                };
-                win_out.emit("gateway-log", serde_json::json!({ "level": level, "message": t })).ok();
-            }
-        }
-        win_out.emit("gateway-log", serde_json::json!({
-            "level": "warn",
-            "message": format!("openclaw 进程 stdout 关闭 (port {})", port_for_detect)
-        })).ok();
-    });
-
-    // stderr → 后台线程 → 实时 emit 到 UI
-    let stderr = child.stderr.take().unwrap();
-    let win_err = window.clone();
-    std::thread::spawn(move || {
-        let reader = BufReader::new(stderr);
-        for line in reader.lines().map_while(Result::ok) {
-            let t = line.trim().to_string();
-            if !t.is_empty() {
-                win_err.emit("gateway-log", serde_json::json!({ "level": "error", "message": t })).ok();
-            }
-        }
-    });
-
-    // 等待健康检查通过（最多 90 秒）
-    let deadline = std::time::Instant::now() + Duration::from_secs(90);
-    let mut ready = false;
-    loop {
-        if std::time::Instant::now() > deadline {
-            break;
-        }
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        if tcp_port_open(port) {
-            ready = true;
-            break;
-        }
-    }
-
-    // child 进程故意不 wait/kill，让它继续在后台运行
-    // Rust 在 Windows 上 drop Child 不会终止子进程
-    std::mem::forget(child);
-
-    if ready {
-        window.emit("gateway-log", serde_json::json!({
-            "level": "ok",
-            "message": format!("Gateway 已就绪 -> http://localhost:{}", port)
-        })).ok();
-
-        let mut manifest = read_manifest(&install_dir).unwrap_or_default();
-        manifest.phase = "complete".into();
-        manifest.gateway_port = port;
-        manifest.gateway_pid = Some(pid);
-        if !manifest.steps_done.contains(&"gateway_started".to_string()) {
-            manifest.steps_done.push("gateway_started".into());
-        }
-        write_manifest(&manifest)?;
-        create_desktop_shortcut(&install_dir).ok();
-        Ok(manifest)
-    } else {
-        Err(format!("Gateway 在 90 秒内未就绪，请查看上方日志排查原因"))
-    }
+) -> Result<CommandResult, String> {
+    let result = run_gateway_start(window, install_dir, port).await;
+    Ok(result)
 }
 
 /// 强制终止 Gateway 进程（直接 taskkill，不走 PowerShell 脚本）
@@ -1500,23 +1317,14 @@ pub fn kill_gateway_process(install_dir: String, port: u16) -> Result<(), String
 
 /// 后台快速启动 Gateway（管理器用）—— 完全隐藏窗口
 #[tauri::command]
-pub fn start_gateway_bg(app: AppHandle, install_dir: String, port: u16) -> Result<(), String> {
-    let script = get_script_path(&app, "gateway.ps1")?;
-    let invoke_expr = format!(
-        "& ([scriptblock]::Create([System.IO.File]::ReadAllText('{}')))",
-        script.to_string_lossy().replace('\'', "''")
-    );
-    let mut cmd = Command::new("powershell");
-    cmd.args(["-NoProfile", "-Command", &invoke_expr])
-    .env("GW_ACTION", "start")
-    .env("GW_INSTALL_DIR", &install_dir)
-    .env("GW_PORT", port.to_string())
-    .stdin(Stdio::null())
-    .stdout(Stdio::null())
-    .stderr(Stdio::null());
-    no_window!(cmd);
-    cmd.spawn().map_err(|e| format!("启动 Gateway 失败: {e}"))?;
-    Ok(())
+pub async fn start_gateway_bg(
+    window: Window,
+    _app: AppHandle,
+    install_dir: String,
+    port: u16,
+) -> Result<CommandResult, String> {
+    let result = run_gateway_start(window, install_dir, port).await;
+    Ok(result)
 }
 
 /// 停止 Gateway —— 完全隐藏窗口

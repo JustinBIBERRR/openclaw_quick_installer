@@ -46,6 +46,7 @@ export default function SysCheck({ onDone }: Props) {
   const [adminFailed, setAdminFailed] = useState(false);
   const [webview2Missing, setWebview2Missing] = useState(false);
   const [relaunching, setRelaunching] = useState(false);
+  const [pathIssue, setPathIssue] = useState("");
 
   const updateCheck = (key: string, update: Partial<SysCheckItem>) => {
     setChecks((prev) => prev.map((c) => (c.key === key ? { ...c, ...update } : c)));
@@ -77,6 +78,7 @@ export default function SysCheck({ onDone }: Props) {
     setDone(false);
     setAdminFailed(false);
     setWebview2Missing(false);
+    setPathIssue("");
     setChecks((prev) => prev.map((c) => ({ ...c, status: "checking", detail: "检测中..." })));
 
     if (!isTauri) {
@@ -123,6 +125,10 @@ export default function SysCheck({ onDone }: Props) {
 
       setAdminFailed(!r.admin);
       setWebview2Missing(!r.webview2);
+      if (!r.path_valid) {
+        setPathIssue(r.path_issue || `建议使用 ${r.suggested_dir}`);
+        setInstallDir(r.suggested_dir || dir);
+      }
       setDone(true);
     } catch {
       setChecks((prev) => prev.map((c) =>
@@ -205,6 +211,14 @@ export default function SysCheck({ onDone }: Props) {
                 点击下载 WebView2 运行时（微软官方）
               </button>
             </div>
+          </div>
+        )}
+
+        {!!pathIssue && (
+          <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-lg p-2.5">
+            <p className="text-xs text-yellow-300/90">
+              路径建议：{pathIssue}
+            </p>
           </div>
         )}
       </div>

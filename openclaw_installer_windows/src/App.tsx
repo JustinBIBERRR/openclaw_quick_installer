@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-import type { AppManifest, WizardStep, LogEntry, GatewayStatus, CheckEnvironmentResult } from "./types";
+import type { AppManifest, WizardStep, LogEntry, GatewayStatus, CheckEnvironmentResult, CliCapabilities } from "./types";
 import SysCheck from "./pages/SysCheck";
 import Installing from "./pages/Installing";
 import ApiKeySetup from "./pages/ApiKeySetup";
@@ -23,6 +23,7 @@ export default function App() {
   const [manifest, setManifest] = useState<AppManifest | null>(null);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>("checking");
+  const [cliCaps, setCliCaps] = useState<CliCapabilities | null>(null);
 
   const addLog = (level: LogEntry["level"], message: string) => {
     setLogs((prev) => [
@@ -47,9 +48,13 @@ export default function App() {
       }
     );
 
-    // 智能检测环境，决定进入 Manager / 直接启动 Gateway / 配置 API / 全新安装
-    invoke<CheckEnvironmentResult>("check_environment")
-      .then(async (env) => {
+    // 智能检测环境 + CLI 能力探测
+    Promise.all([
+      invoke<CheckEnvironmentResult>("check_environment"),
+      invoke<CliCapabilities>("detect_cli_capabilities").catch(() => null),
+    ])
+      .then(async ([env, caps]) => {
+        if (caps) setCliCaps(caps);
         if (env.manifest_complete && env.manifest) {
           setManifest(env.manifest);
           setView("manager");
@@ -149,6 +154,7 @@ export default function App() {
     return (
       <Manager
         manifest={manifest!}
+        cliCaps={cliCaps}
         gatewayStatus={gatewayStatus}
         onStatusChange={setGatewayStatus}
         onManifestChange={setManifest}
@@ -181,12 +187,14 @@ export default function App() {
         {wizardStep === "apikey" && (
           <ApiKeySetup
             manifest={manifest}
+            cliCaps={cliCaps}
             onDone={handleApiKeyDone}
           />
         )}
         {wizardStep === "launching" && (
           <Launching
             manifest={manifest!}
+            cliCaps={cliCaps}
             logs={logs}
             addLog={addLog}
             onDone={handleLaunchDone}

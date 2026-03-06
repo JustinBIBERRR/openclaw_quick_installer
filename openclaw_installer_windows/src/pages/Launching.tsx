@@ -3,12 +3,13 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Loader, RefreshCw, ExternalLink, Square, Stethoscope, Wrench, FolderOpen, Copy, CheckCircle } from "lucide-react";
 import LogScroller from "../components/LogScroller";
-import type { AppManifest, LogEntry, DoctorResult, CommandResult } from "../types";
+import type { AppManifest, LogEntry, DoctorResult, CommandResult, CliCapabilities } from "../types";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 interface Props {
   manifest: AppManifest;
+  cliCaps: CliCapabilities | null;
   logs: LogEntry[];
   addLog: (level: LogEntry["level"], message: string) => void;
   onDone: (manifest: AppManifest) => void;
@@ -16,7 +17,7 @@ interface Props {
 
 type LaunchPhase = "idle" | "starting" | "done" | "failed" | "diagnosing" | "fixing";
 
-export default function Launching({ manifest, logs, addLog, onDone }: Props) {
+export default function Launching({ manifest, cliCaps, logs, addLog, onDone }: Props) {
   const [phase, setPhase] = useState<LaunchPhase>("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [errorHint, setErrorHint] = useState<string | null>(null);
@@ -83,15 +84,23 @@ export default function Launching({ manifest, logs, addLog, onDone }: Props) {
     }
 
     try {
-      const result = await invoke<AppManifest>("start_gateway", {
+      const result = await invoke<CommandResult>("start_gateway", {
         installDir: manifest.install_dir,
         port: manifest.gateway_port || 18789,
       });
+      if (!result.success) {
+        throw new Error(JSON.stringify(result));
+      }
       if (timerRef.current) clearInterval(timerRef.current);
       if (cancelledRef.current) return;
       setPhase("done");
-      addLog("ok", `Gateway 已就绪 → http://localhost:${result.gateway_port}/chat`);
-      onDone(result);
+      const finalPort = manifest.gateway_port || 18789;
+      addLog("ok", `Gateway 已就绪 → http://localhost:${finalPort}/chat`);
+      onDone({
+        ...manifest,
+        phase: "complete",
+        gateway_port: finalPort,
+      });
     } catch (e: unknown) {
       if (timerRef.current) clearInterval(timerRef.current);
       if (cancelledRef.current) return;
@@ -122,6 +131,11 @@ export default function Launching({ manifest, logs, addLog, onDone }: Props) {
   }
 
   async function runDiagnose() {
+    if (!cliCaps?.has_doctor) {
+      setErrorMsg("当前 OpenClaw 版本不支持 doctor 诊断");
+      setErrorHint("请升级 OpenClaw 后重试");
+      return;
+    }
     setPhase("diagnosing");
     addLog("info", "正在运行 openclaw doctor 诊断...");
     
@@ -148,6 +162,11 @@ export default function Launching({ manifest, logs, addLog, onDone }: Props) {
   }
 
   async function runFix() {
+    if (!cliCaps?.has_doctor) {
+      setErrorMsg("当前 OpenClaw 版本不支持 doctor --fix");
+      setErrorHint("请升级 OpenClaw 后重试");
+      return;
+    }
     setPhase("fixing");
     addLog("info", "正在运行 openclaw doctor --fix 修复...");
     
@@ -383,6 +402,7 @@ export default function Launching({ manifest, logs, addLog, onDone }: Props) {
               <div className="flex gap-2">
                 <button
                   onClick={runDiagnose}
+                  disabled={!cliCaps?.has_doctor}
                   className="flex items-center gap-2 px-3 py-2 bg-yellow-900/30 hover:bg-yellow-800/40 text-yellow-400 text-sm rounded-lg transition-colors"
                 >
                   <Stethoscope size={14} />
@@ -390,6 +410,7 @@ export default function Launching({ manifest, logs, addLog, onDone }: Props) {
                 </button>
                 <button
                   onClick={runFix}
+                  disabled={!cliCaps?.has_doctor}
                   className="flex items-center gap-2 px-3 py-2 bg-yellow-900/30 hover:bg-yellow-800/40 text-yellow-400 text-sm rounded-lg transition-colors"
                 >
                   <Wrench size={14} />

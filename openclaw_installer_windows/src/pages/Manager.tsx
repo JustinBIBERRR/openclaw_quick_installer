@@ -7,18 +7,19 @@ import {
 } from "lucide-react";
 import StatusDot from "../components/StatusDot";
 import TitleBar from "../components/TitleBar";
-import type { AppManifest, GatewayStatus, DoctorResult, CommandResult } from "../types";
+import type { AppManifest, GatewayStatus, DoctorResult, CommandResult, CliCapabilities } from "../types";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 interface Props {
   manifest: AppManifest;
+  cliCaps: CliCapabilities | null;
   gatewayStatus: GatewayStatus;
   onStatusChange: (s: GatewayStatus) => void;
   onManifestChange?: (m: AppManifest) => void;
 }
 
-export default function Manager({ manifest, gatewayStatus, onStatusChange }: Props) {
+export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChange }: Props) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastErrorHint, setLastErrorHint] = useState<string | null>(null);
@@ -55,7 +56,16 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
     try {
       if (action === "start") {
         onStatusChange("starting");
-        await invoke("start_gateway_bg", { installDir: manifest.install_dir, port });
+        const result = await invoke<CommandResult>("start_gateway_bg", {
+          installDir: manifest.install_dir,
+          port,
+        });
+        if (!result.success) {
+          setLastError(result.message);
+          setLastErrorHint(result.hint);
+          onStatusChange("stopped");
+          return;
+        }
         // 等待并检查状态
         await new Promise((r) => setTimeout(r, 3000));
         const status = await invoke<string>("get_gateway_status", { installDir: manifest.install_dir, port });
@@ -84,7 +94,13 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
         onStatusChange("starting");
         await invoke("kill_gateway_process", { installDir: manifest.install_dir, port });
         await new Promise((r) => setTimeout(r, 1500));
-        await invoke("start_gateway_bg", { installDir: manifest.install_dir, port });
+        const result = await invoke<CommandResult>("start_gateway_bg", { installDir: manifest.install_dir, port });
+        if (!result.success) {
+          setLastError(result.message);
+          setLastErrorHint(result.hint);
+          onStatusChange("stopped");
+          return;
+        }
         await new Promise((r) => setTimeout(r, 3000));
         checkStatus();
       }
@@ -99,6 +115,11 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
   }
 
   async function runDiagnose() {
+    if (!cliCaps?.has_doctor) {
+      setLastError("当前 OpenClaw 版本不支持 doctor 诊断");
+      setLastErrorHint("请升级 OpenClaw 后重试");
+      return;
+    }
     setActionLoading("diagnose");
     setShowDoctorPanel(true);
     try {
@@ -113,6 +134,11 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
   }
 
   async function runFix() {
+    if (!cliCaps?.has_doctor) {
+      setLastError("当前 OpenClaw 版本不支持 doctor --fix");
+      setLastErrorHint("请升级 OpenClaw 后重试");
+      return;
+    }
     setActionLoading("fix");
     try {
       const result = await invoke<CommandResult>("run_doctor_fix");
@@ -186,7 +212,13 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
             {gatewayStatus === "running" ? (
               <>
                 <button
-                  onClick={() => invoke("open_url", { url: chatUrl })}
+                  onClick={async () => {
+                    if (cliCaps?.has_dashboard) {
+                      await invoke("run_dashboard");
+                    } else {
+                      await invoke("open_url", { url: chatUrl });
+                    }
+                  }}
                   className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-brand-500 hover:bg-brand-600 text-gray-950 font-semibold text-sm rounded-lg transition-colors"
                 >
                   <ExternalLink size={15} />
@@ -260,7 +292,7 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
             <div className="flex gap-2 mt-3 pl-7">
               <button
                 onClick={runDiagnose}
-                disabled={actionLoading !== null}
+                disabled={actionLoading !== null || !cliCaps?.has_doctor}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-yellow-900/40 hover:bg-yellow-800/50 text-yellow-400 text-xs rounded-lg transition-colors disabled:opacity-50"
               >
                 <Stethoscope size={12} />
@@ -268,7 +300,7 @@ export default function Manager({ manifest, gatewayStatus, onStatusChange }: Pro
               </button>
               <button
                 onClick={runFix}
-                disabled={actionLoading !== null}
+                disabled={actionLoading !== null || !cliCaps?.has_doctor}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-yellow-900/40 hover:bg-yellow-800/50 text-yellow-400 text-xs rounded-lg transition-colors disabled:opacity-50"
               >
                 <Wrench size={12} />
