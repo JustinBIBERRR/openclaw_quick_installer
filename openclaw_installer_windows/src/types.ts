@@ -33,6 +33,7 @@ export interface AppManifest {
 }
 
 export interface CheckEnvironmentResult {
+  node_installed: boolean;
   openclaw_installed: boolean;
   config_exists: boolean;
   manifest_complete: boolean;

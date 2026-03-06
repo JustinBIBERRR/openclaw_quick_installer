@@ -74,6 +74,7 @@ pub struct ValidateResult {
 
 #[derive(Debug, Serialize)]
 pub struct CheckEnvironmentResult {
+    pub node_installed: bool,
     pub openclaw_installed: bool,
     pub config_exists: bool,
     pub manifest_complete: bool,
@@ -340,10 +341,31 @@ pub fn get_app_state() -> Option<AppManifest> {
     read_manifest(&install_dir)
 }
 
+/// 检测 Node.js 是否已安装且版本 >= 18
+fn check_node_installed() -> bool {
+    let mut cmd = Command::new("node");
+    cmd.args(["--version"]).stdout(Stdio::piped()).stderr(Stdio::null());
+    no_window!(cmd);
+    if let Ok(o) = cmd.output() {
+        if o.status.success() {
+            let out = String::from_utf8_lossy(&o.stdout);
+            if let Some(m) = out.trim().strip_prefix('v') {
+                if let Some(major) = m.split('.').next() {
+                    if let Ok(v) = major.parse::<u32>() {
+                        return v >= 18;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// 检测环境是否已配置完成（用于第二次启动时决定跳步）
 #[tauri::command]
 pub fn check_environment() -> CheckEnvironmentResult {
     refresh_path();
+    let node_installed = check_node_installed();
     let openclaw_installed = find_openclaw_cmd().is_some();
 
     let config_exists = openclaw_config_dir()
@@ -366,6 +388,7 @@ pub fn check_environment() -> CheckEnvironmentResult {
         .unwrap_or(false);
 
     CheckEnvironmentResult {
+        node_installed,
         openclaw_installed,
         config_exists,
         manifest_complete,

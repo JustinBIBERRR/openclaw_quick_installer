@@ -4,11 +4,14 @@ import { listen } from "@tauri-apps/api/event";
 import { Loader, RefreshCw, ExternalLink, FolderSearch } from "lucide-react";
 import LogScroller from "../components/LogScroller";
 import type { AppManifest, LogEntry, CommandResult } from "../types";
+import type { EnvEstimate } from "../utils/estimate";
+import { getInstallStepEstimate } from "../utils/estimate";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 interface Props {
   manifest: AppManifest | null;
+  envEstimate: EnvEstimate | null;
   logs: LogEntry[];
   addLog: (level: LogEntry["level"], message: string) => void;
   onDone: () => void;
@@ -23,7 +26,7 @@ const INSTALL_STEPS = [
   "完成",
 ];
 
-export default function Installing({ manifest, logs, addLog, onDone }: Props) {
+export default function Installing({ manifest, envEstimate, logs, addLog, onDone }: Props) {
   const [phase, setPhase] = useState<InstallPhase>("idle");
   const [currentStep, setCurrentStep] = useState(0);
   const [errorMsg, setErrorMsg] = useState("");
@@ -112,7 +115,7 @@ export default function Installing({ manifest, logs, addLog, onDone }: Props) {
       <div>
         <h2 className="text-lg font-semibold text-gray-100">安装 OpenClaw</h2>
         <p className="text-sm text-gray-400 mt-0.5">
-          检测/安装 Node.js 并全局安装 OpenClaw CLI（约 1-3 分钟）
+          检测/安装 Node.js 并全局安装 OpenClaw CLI（{getInstallStepEstimate(envEstimate)}）
         </p>
       </div>
 

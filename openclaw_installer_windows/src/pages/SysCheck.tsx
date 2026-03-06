@@ -5,10 +5,13 @@ import {
   ShieldCheck, ExternalLink,
 } from "lucide-react";
 import type { SysCheckItem } from "../types";
+import type { EnvEstimate } from "../utils/estimate";
+import { getFullWizardEstimate } from "../utils/estimate";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 interface Props {
+  envEstimate: EnvEstimate | null;
   onDone: (installDir: string) => void;
 }
 
@@ -35,7 +38,7 @@ const CHECK_META: Record<string, { label: string; tip: string }> = {
   },
 };
 
-export default function SysCheck({ onDone }: Props) {
+export default function SysCheck({ envEstimate, onDone }: Props) {
   const [checks, setChecks] = useState<SysCheckItem[]>(
     Object.entries(CHECK_META).map(([key, m]) => ({
       key, label: m.label, status: "checking", detail: "检测中..."
@@ -165,7 +168,12 @@ export default function SysCheck({ onDone }: Props) {
       <div className="flex-shrink-0 px-6 pt-4 pb-2 flex flex-col gap-2">
         <div>
           <h2 className="text-lg font-semibold text-gray-100">系统预检</h2>
-          <p className="text-sm text-gray-400 mt-0.5">正在检测安装环境，全部通过后即可开始安装</p>
+          <p className="text-sm text-gray-400 mt-0.5">
+            正在检测安装环境，全部通过后即可开始安装
+            {envEstimate && (
+              <span className="text-gray-500 ml-1">（预计剩余 {getFullWizardEstimate(envEstimate)}）</span>
+            )}
+          </p>
         </div>
 
         <div className="text-xs text-gray-600 flex flex-col gap-0.5">
@@ -254,7 +262,12 @@ export default function SysCheck({ onDone }: Props) {
           ) : checks.some((c) => c.status === "warn") ? (
             <p className="text-xs text-yellow-500">存在警告项，建议处理后再继续</p>
           ) : (
-            <p className="text-xs text-gray-500">所有检测通过 ✓</p>
+            <p className="text-xs text-gray-500">
+              所有检测通过 ✓
+              {envEstimate && (
+                <span className="text-gray-600 ml-1">· 预计剩余 {getFullWizardEstimate(envEstimate)}</span>
+              )}
+            </p>
           )}
           <button
             disabled={!canProceed}

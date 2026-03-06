@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 import type { AppManifest, WizardStep, LogEntry, GatewayStatus, CheckEnvironmentResult, CliCapabilities } from "./types";
+import type { EnvEstimate } from "./utils/estimate";
 import SysCheck from "./pages/SysCheck";
 import Installing from "./pages/Installing";
 import ApiKeySetup from "./pages/ApiKeySetup";
@@ -24,6 +25,7 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>("checking");
   const [cliCaps, setCliCaps] = useState<CliCapabilities | null>(null);
+  const [envEstimate, setEnvEstimate] = useState<EnvEstimate | null>(null);
 
   const addLog = (level: LogEntry["level"], message: string) => {
     setLogs((prev) => [
@@ -55,6 +57,11 @@ export default function App() {
     ])
       .then(async ([env, caps]) => {
         if (caps) setCliCaps(caps);
+        setEnvEstimate({
+          node_installed: env.node_installed,
+          openclaw_installed: env.openclaw_installed,
+          config_exists: env.config_exists,
+        });
         if (env.manifest_complete && env.manifest) {
           setManifest(env.manifest);
           setView("manager");
@@ -174,11 +181,12 @@ export default function App() {
       </div>
       <div className="flex-1 overflow-hidden">
         {wizardStep === "syscheck" && (
-          <SysCheck onDone={handleSysCheckDone} />
+          <SysCheck envEstimate={envEstimate} onDone={handleSysCheckDone} />
         )}
         {wizardStep === "installing" && (
           <Installing
             manifest={manifest}
+            envEstimate={envEstimate}
             logs={logs}
             addLog={addLog}
             onDone={handleInstallDone}
