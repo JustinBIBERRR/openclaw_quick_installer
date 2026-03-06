@@ -700,7 +700,6 @@ fn build_openclaw_config(
             "bind": "loopback",
             "auth": {
                 "mode": "token",
-                "token": generate_token(),
                 "allowTailscale": false
             },
             "tailscale": {
@@ -709,22 +708,6 @@ fn build_openclaw_config(
             }
         }
     })
-}
-
-fn generate_token() -> String {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let mut hasher = DefaultHasher::new();
-    now.as_nanos().hash(&mut hasher);
-    std::process::id().hash(&mut hasher);
-    let h1 = hasher.finish();
-    std::thread::current().id().hash(&mut hasher);
-    (now.as_nanos() ^ 0xDEAD_BEEF).hash(&mut hasher);
-    let h2 = hasher.finish();
-    format!("oc-{:016x}{:016x}", h1, h2)
 }
 
 fn chrono_now_iso() -> String {
