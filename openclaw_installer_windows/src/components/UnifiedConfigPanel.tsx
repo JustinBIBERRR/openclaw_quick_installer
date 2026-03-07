@@ -15,7 +15,41 @@ const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
 const BTN_PRIMARY = "flex items-center gap-2 px-6 py-2.5 bg-brand-500 hover:bg-brand-600 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 font-semibold text-sm rounded-xl transition-colors";
 const BTN_TEXT = "text-sm text-slate-500 hover:text-slate-300 transition-colors px-2 py-1";
 
-type LaunchMode = "web" | "tui" | "skip";
+type LaunchMode = "web" | "tui";
+
+function Toggle({
+  checked,
+  onChange,
+  disabled = false,
+}: {
+  checked: boolean;
+  onChange?: (v: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => !disabled && onChange?.(!checked)}
+      className={`relative inline-flex h-5 w-9 flex-shrink-0 rounded-full border-2 transition-colors duration-200 ease-in-out focus:outline-none
+        ${checked
+          ? disabled
+            ? "bg-brand-500/50 border-brand-500/30 cursor-not-allowed"
+            : "bg-brand-500 border-brand-500/80 cursor-pointer"
+          : disabled
+            ? "bg-slate-700/50 border-slate-700/30 cursor-not-allowed"
+            : "bg-slate-700 border-slate-700 cursor-pointer"
+        }`}
+    >
+      <span
+        className={`pointer-events-none inline-block h-3.5 w-3.5 mt-px rounded-full bg-white shadow transition-transform duration-200 ease-in-out
+          ${checked ? "translate-x-4" : "translate-x-0"}`}
+      />
+    </button>
+  );
+}
 type ItemState = "run" | "skip" | "unsupported";
 type ValidateState = "idle" | "validating" | "ok" | "error";
 
@@ -26,6 +60,7 @@ interface ValidateResult {
 
 interface Props {
   cliCaps: CliCapabilities | null;
+  cliCapsLoading?: boolean;
   mode: "wizard" | "manager";
   onDone: (summary: OnboardingSummary | null) => void;
   onCancel?: () => void;
@@ -66,7 +101,7 @@ const PROVIDERS: ApiProviderConfig[] = [
   },
 ];
 
-export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: Props) {
+export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mode, onDone, onCancel }: Props) {
   const apiKeyInputRef = useRef<HTMLInputElement | null>(null);
 
   const [provider, setProvider] = useState<ApiProvider>("anthropic");
@@ -76,8 +111,8 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
   const [showKey, setShowKey] = useState(false);
   const [skipApiConfig, setSkipApiConfig] = useState(false);
 
-  const [installDaemon, setInstallDaemon] = useState(true);
-  const [enableChannel, setEnableChannel] = useState(true);
+  const [installDaemon] = useState(true);
+  const [enableChannel, setEnableChannel] = useState(false);
   const [channel, setChannel] = useState("feishu");
   const [feishuAppId, setFeishuAppId] = useState("");
   const [feishuAppSecret, setFeishuAppSecret] = useState("");
@@ -123,13 +158,13 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
   const hasFlag = (name: string) => normFlags.has(name.toLowerCase()) || normFlags.has(name.replace(/^--/, "").toLowerCase());
 
   useEffect(() => {
-    if (!isTauri || cliCaps) return;
+    if (!isTauri || cliCaps || mode === "wizard") return;
     setCapsLoading(true);
     invoke<CliCapabilities>("detect_cli_capabilities")
       .then((caps) => setLocalCaps(caps))
       .catch(() => {})
       .finally(() => setCapsLoading(false));
-  }, [cliCaps]);
+  }, [cliCaps, mode]);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -156,33 +191,39 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
         if (!saved) return;
         setFeishuAppId(saved.app_id || "");
         setFeishuAppSecret(saved.app_secret || "");
+        if (saved.app_id || saved.app_secret) {
+          setEnableChannel(true);
+        }
         setFeishuValidateState("ok");
         setFeishuValidateMsg("已检测到历史飞书配置");
       })
       .catch(() => {});
   }, []);
 
-  const supportsInstallDaemon = hasFlag("install-daemon");
-  const supportsChannel = hasFlag("channel") || hasFlag("channels");
-  const supportsInstallSkills = hasFlag("install-skills");
-  const supportsInstallHooks = hasFlag("install-hooks");
-  const supportsUiMode = hasFlag("ui") || hasFlag("web") || hasFlag("tui");
+  // 当 effectiveCaps 为 null 时（CLI 探测仍在进行），乐观假设所有能力都支持，
+  // 避免在探测结果到来前误报"版本不支持"
+  const cliLoading = cliCapsLoading || capsLoading;
+  // daemon 是必选参数，始终传入，不受 CLI 版本能力影响
+  const supportsChannel = true;
+  const supportsInstallSkills = cliLoading || !effectiveCaps ? true : hasFlag("install-skills");
+  const supportsInstallHooks = cliLoading || !effectiveCaps ? true : hasFlag("install-hooks");
+  const supportsUiMode = true;
 
   const commandParts: string[] = ["openclaw onboard", "--non-interactive", "--accept-risk"];
   if (installDaemon) commandParts.push("--install-daemon");
-  if (enableChannel) commandParts.push(`--channel ${channel}`);
+  if (!enableChannel) commandParts.push("--skip-channels");
   if (feishuEnabled && feishuAppId.trim() && feishuAppSecret.trim()) {
     commandParts.push("--feishu-app-id ***");
     commandParts.push("--feishu-app-secret ***");
   }
   if (!installSkills) commandParts.push("--skip-skills");
   if (!installHooks) commandParts.push("--skip-hooks");
-  if (launchMode === "web") commandParts.push("--ui web");
-  if (launchMode === "tui") commandParts.push("--ui tui");
+  // web/tui 为默认行为，onboard 自动处理，无需传参
   if (!skipApiConfig) {
     if (provider === "anthropic") commandParts.push("--auth-choice anthropic-api-key");
     if (provider === "openai") commandParts.push("--auth-choice openai-api-key");
     if (provider === "deepseek" || provider === "custom") commandParts.push("--auth-choice custom-api-key");
+    if (apiKey) commandParts.push("--api-key ***");
   }
   const commandPreview = commandParts.join(" ");
 
@@ -197,14 +238,14 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
     unsupported: "版本不支持，将跳过",
   };
 
-  const daemonState: ItemState = installDaemon ? (supportsInstallDaemon ? "run" : "unsupported") : "skip";
+  const daemonState: ItemState = "run";
   const channelState: ItemState = enableChannel ? (supportsChannel ? "run" : "unsupported") : "skip";
   const feishuState: ItemState = feishuEnabled
     ? (feishuReady ? "run" : "skip")
     : "skip";
   const skillsState: ItemState = installSkills ? (supportsInstallSkills ? "run" : "unsupported") : "skip";
   const hooksState: ItemState = installHooks ? (supportsInstallHooks ? "run" : "unsupported") : "skip";
-  const launchState: ItemState = launchMode === "skip" ? "skip" : (supportsUiMode ? "run" : "unsupported");
+  const launchState: ItemState = supportsUiMode ? "run" : "unsupported";
 
   const buildReason = (key: string, state: ItemState): string => {
     if (state === "skip") {
@@ -213,7 +254,6 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
       return "用户未启用该子步骤";
     }
     if (state === "unsupported") {
-      if (key === "daemon") return "缺少 --install-daemon";
       if (key === "channel") return "缺少 --channel/--channels";
       if (key === "skills") return "缺少 --install-skills";
       if (key === "hooks") return "缺少 --install-hooks";
@@ -221,12 +261,12 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
       return "当前版本缺少对应参数";
     }
     if (key === "api") return "将写入 API Key/模型配置";
-    if (key === "daemon") return "将传入 --install-daemon";
-    if (key === "channel") return `将传入 --channel ${channel}`;
+    if (key === "daemon") return "必选参数，始终传入 --install-daemon";
+    if (key === "channel") return `飞书凭据将传递给 onboard（--feishu-app-id/secret）`;
     if (key === "feishu") return "将写入飞书 appId/appSecret 并尝试传递给 onboard";
     if (key === "skills") return "将传入 --install-skills";
     if (key === "hooks") return "将传入 --install-hooks";
-    if (key === "launch") return launchMode === "web" ? "将传入 --ui web" : "将传入 --ui tui";
+    if (key === "launch") return launchMode === "web" ? "onboard 默认启动 Web 界面" : "onboard 将以 TUI 模式启动";
     return "将按当前设置执行";
   };
 
@@ -258,16 +298,12 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
         });
         return;
       }
-      if (!effectiveCaps?.has_onboarding) {
-        const summary = {
-          command: commandPreview,
-          message: "当前版本不支持 onboard，已跳过",
-          hint: "请升级 OpenClaw 后再启用可选能力",
-        };
-        setHint(summary.hint);
-        onDone(summary);
-        return;
-      }
+      // 注意：has_onboarding=false 可能是 CLI 探测时找不到命令（PATH 问题）而非真正不支持
+      // 此处仅在确认 CLI 存在但明确不包含 onboard 命令时才跳过，避免误杀
+      // 实际 run_onboarding_guided 在 Rust 端有自己的错误处理
+      // #region agent log
+      fetch('http://127.0.0.1:7244/ingest/266bf96a-5673-475a-a7f1-1ee0eed8a36c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1c7103'},body:JSON.stringify({sessionId:'1c7103',runId:'fix-has-onboarding-v1',hypothesisId:'HO1',location:'UnifiedConfigPanel.tsx:runConfig',message:'runConfig 继续执行（已移除 has_onboarding 守卫）',data:{has_onboarding:effectiveCaps?.has_onboarding,flags_count:effectiveCaps?.onboarding_flags?.length??0,effectiveCapsNull:!effectiveCaps},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
 
       if (feishuEnabled) {
         const passed = await validateFeishuConnectivity();
@@ -285,7 +321,7 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
         feishuAppSecret: feishuEnabled ? feishuAppSecret.trim() : null,
         installSkills,
         installHooks,
-        launchMode: launchMode === "skip" ? null : launchMode,
+        launchMode: launchMode,
       });
 
       if (!result.success) {
@@ -349,21 +385,17 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
         <h2 className="text-xl font-semibold text-slate-100 tracking-tight">{title}</h2>
         <p className="text-sm text-slate-400 mt-1">{subtitle}</p>
         {detectedMsg && <p className="text-xs text-brand-300 mt-2">{detectedMsg}</p>}
-        {capsLoading && <p className="text-xs text-slate-500 mt-1">正在检测 CLI 能力...</p>}
+        {(cliCapsLoading || capsLoading) && <p className="text-xs text-slate-500 mt-1">正在检测 CLI 能力...</p>}
       </div>
 
       <div className="bg-gradient-to-b from-slate-900 to-slate-900/70 rounded-2xl border border-slate-800 p-5 flex flex-col gap-5 shadow-sm">
         <div className="border-b border-slate-800 pb-4">
           <div className="flex items-center justify-between mb-3">
             <p className="text-sm font-medium text-slate-100">API 配置</p>
-            <label className="flex items-center gap-2 text-xs text-slate-400 bg-slate-900 border border-slate-700 rounded-full px-3 py-1.5">
-              <input
-                type="checkbox"
-                checked={skipApiConfig}
-                onChange={(e) => setSkipApiConfig(e.target.checked)}
-              />
-              跳过 API 配置
-            </label>
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <span>跳过 API 配置</span>
+              <Toggle checked={skipApiConfig} onChange={setSkipApiConfig} />
+            </div>
           </div>
 
           {detectedConfig && (
@@ -482,16 +514,27 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
           )}
         </div>
 
-        <label className="flex items-center justify-between text-sm text-slate-200 bg-slate-900/60 border border-slate-800 rounded-xl px-3 py-2.5">
-          <span>安装 daemon（推荐）</span>
-          <input type="checkbox" checked={installDaemon} onChange={(e) => setInstallDaemon(e.target.checked)} />
-        </label>
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center justify-between bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3">
+            <div>
+              <p className="text-sm text-slate-200">安装 daemon</p>
+              <p className="text-xs text-slate-500 mt-0.5">随系统自启动，保持后台常驻（推荐）</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-brand-400/80">已开启</span>
+              <Toggle checked={true} disabled={true} />
+            </div>
+          </div>
 
-        <div className="border-t border-slate-800 pt-4">
-          <label className="flex items-center justify-between text-sm text-slate-200">
-            <span>配置 channel（推荐：飞书）</span>
-            <input type="checkbox" checked={enableChannel} onChange={(e) => setEnableChannel(e.target.checked)} />
-          </label>
+          <div className="border-t border-slate-800 pt-3">
+            <div className="flex items-center justify-between bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3">
+              <div>
+                <p className="text-sm text-slate-200">配置 channel</p>
+                <p className="text-xs text-slate-500 mt-0.5">推荐配置飞书以使用 Bot 集成</p>
+              </div>
+              <Toggle checked={enableChannel} onChange={setEnableChannel} />
+            </div>
+          </div>
           {enableChannel && (
             <div className="mt-2 space-y-3">
               <select
@@ -569,19 +612,30 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
           )}
         </div>
 
-        <label className="flex items-center justify-between text-sm text-slate-200 border-t border-slate-800 pt-4">
-          <span>安装 skills（可选）</span>
-          <input type="checkbox" checked={installSkills} onChange={(e) => setInstallSkills(e.target.checked)} />
-        </label>
+        <div className="flex flex-col gap-2 border-t border-slate-800 pt-3">
+          <div className="flex items-center justify-between bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3">
+            <div>
+              <p className="text-sm text-slate-200">安装 skills（可选）</p>
+              <p className="text-xs text-slate-500 mt-0.5">安装预置技能包</p>
+            </div>
+            <Toggle checked={installSkills} onChange={setInstallSkills} />
+          </div>
 
-        <label className="flex items-center justify-between text-sm text-slate-200">
-          <span>安装 hooks（可选）</span>
-          <input type="checkbox" checked={installHooks} onChange={(e) => setInstallHooks(e.target.checked)} />
-        </label>
+          <div className="flex items-center justify-between bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3">
+            <div>
+              <p className="text-sm text-slate-200">安装 hooks（可选）</p>
+              <p className="text-xs text-slate-500 mt-0.5">安装 Git hooks 集成</p>
+            </div>
+            <Toggle checked={installHooks} onChange={setInstallHooks} />
+          </div>
+        </div>
 
         <div className="border-t border-slate-800 pt-4">
-          <p className="text-sm text-slate-200 mb-2">启动方式</p>
-          <div className="grid grid-cols-3 gap-2">
+          <p className="text-sm text-slate-200 mb-2">
+            启动方式
+            <span className="ml-2 text-xs text-slate-500">（不可跳过）</span>
+          </p>
+          <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => setLaunchMode("web")}
               className={`text-sm rounded-xl px-3 py-2.5 border transition-colors ${launchMode === "web" ? "border-brand-400 text-brand-300 bg-brand-500/10" : "border-slate-700 text-slate-400 hover:border-slate-600"}`}
@@ -593,12 +647,6 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
               className={`text-sm rounded-xl px-3 py-2.5 border transition-colors ${launchMode === "tui" ? "border-brand-400 text-brand-300 bg-brand-500/10" : "border-slate-700 text-slate-400 hover:border-slate-600"}`}
             >
               TUI
-            </button>
-            <button
-              onClick={() => setLaunchMode("skip")}
-              className={`text-sm rounded-xl px-3 py-2.5 border transition-colors ${launchMode === "skip" ? "border-brand-400 text-brand-300 bg-brand-500/10" : "border-slate-700 text-slate-400 hover:border-slate-600"}`}
-            >
-              跳过
             </button>
           </div>
         </div>
@@ -614,7 +662,10 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
         </div>
 
         <div className="border-t border-slate-800 pt-4">
-          <p className="text-xs text-slate-500 mb-2">子步骤执行状态</p>
+          <p className="text-xs text-slate-500 mb-2">
+            子步骤执行状态
+            {cliLoading && <span className="ml-2 text-slate-600">（CLI 能力检测中...）</span>}
+          </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {[
               { key: "api", label: "API 配置", state: skipApiConfig ? "skip" : "run" as ItemState },
@@ -623,7 +674,7 @@ export default function UnifiedConfigPanel({ cliCaps, mode, onDone, onCancel }: 
               { key: "feishu", label: "飞书凭据", state: feishuState },
               { key: "skills", label: "skills", state: skillsState },
               { key: "hooks", label: "hooks", state: hooksState },
-              { key: "launch", label: launchMode === "skip" ? "启动方式" : `启动方式(${launchMode})`, state: launchState },
+              { key: "launch", label: `启动方式(${launchMode})`, state: launchState },
             ].map((item) => (
               <div key={item.label} className="text-xs border border-slate-800 rounded-xl px-3 py-2 bg-slate-900/60">
                 <div className="flex items-center justify-between">

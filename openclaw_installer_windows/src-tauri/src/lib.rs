@@ -9,6 +9,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_state,
             commands::check_environment,
+            commands::syscheck_openclaw_config,
+            commands::syscheck_admin,
+            commands::syscheck_memory,
             commands::run_syscheck,
             commands::start_install,
             commands::validate_api_key,

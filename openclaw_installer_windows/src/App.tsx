@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-import type { AppManifest, WizardStep, LogEntry, GatewayStatus, CheckEnvironmentResult, CliCapabilities, OnboardingSummary } from "./types";
+import type { AppManifest, WizardStep, LogEntry, GatewayStatus, CliCapabilities, OnboardingSummary } from "./types";
 import type { EnvEstimate } from "./utils/estimate";
 import SysCheck from "./pages/SysCheck";
 import Installing from "./pages/Installing";
@@ -17,6 +17,7 @@ import ResizeHandles from "./components/ResizeHandles";
 type AppView = "loading" | "wizard" | "manager";
 
 let logIdCounter = 0;
+let cliCapsProbePromise: Promise<CliCapabilities> | null = null;
 
 export default function App() {
   const [view, setView] = useState<AppView>("loading");
@@ -26,7 +27,8 @@ export default function App() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>("checking");
   const [cliCaps, setCliCaps] = useState<CliCapabilities | null>(null);
-  const [envEstimate, setEnvEstimate] = useState<EnvEstimate | null>(null);
+  const [cliCapsLoading, setCliCapsLoading] = useState(false);
+  const [envEstimate] = useState<EnvEstimate | null>(null);
   const [loadingSec, setLoadingSec] = useState(0);
   const [onboardingSummary, setOnboardingSummary] = useState<OnboardingSummary | null>(null);
 
@@ -62,61 +64,15 @@ export default function App() {
       ]);
     };
 
-    // 先做环境检测（带超时），避免 loading 卡死
-    withTimeout(invoke<CheckEnvironmentResult>("check_environment"), 8000)
-      .then(async (env) => {
-        setEnvEstimate({
-          node_installed: env.node_installed,
-          openclaw_installed: env.openclaw_installed,
-          config_exists: env.config_exists,
-        });
-        if (env.manifest_complete && env.manifest) {
-          setManifest(env.manifest);
-          setManagerAutoOpenConfig(false);
-          setView("manager");
-          return;
-        }
-        if (env.openclaw_installed && env.config_exists) {
-          const m = env.manifest ?? {
-            version: "1.0.0",
-            phase: "fresh",
-            install_dir: await invoke<string>("get_default_install_dir"),
-            gateway_port: 18789,
-            gateway_pid: null,
-            api_provider: "",
-            api_key_configured: true,
-            api_key_verified: false,
-            steps_done: [],
-            last_error: null,
-          };
-          setManifest(m);
-          setManagerAutoOpenConfig(false);
-          // 已安装并已存在配置，直接进入 Manager（可随时修改配置并启动 Chat）
-          setView("manager");
-          return;
-        }
-        if (env.openclaw_installed && !env.config_exists) {
-          const m = env.manifest ?? {
-            version: "1.0.0",
-            phase: "fresh",
-            install_dir: await invoke<string>("get_default_install_dir"),
-            gateway_port: 18789,
-            gateway_pid: null,
-            api_provider: "",
-            api_key_configured: false,
-            api_key_verified: false,
-            steps_done: ["openclaw_installed"],
-            last_error: null,
-          };
-          setManifest(m);
-          // 已安装但未配置：直接进入 Manager，并自动弹出综合配置
-          setManagerAutoOpenConfig(true);
-          setView("manager");
-          return;
-        }
-        const m = env.manifest ?? null;
+    // 启动阶段仅做轻量路由：优先读取本地 manifest，避免首屏重检测
+    withTimeout(invoke<AppManifest | null>("get_app_state"), 5000)
+      .then((m) => {
         setManifest(m);
         setManagerAutoOpenConfig(false);
+        if (m && m.phase === "complete") {
+          setView("manager");
+          return;
+        }
         setView("wizard");
         if (m && m.phase === "installing") {
           setWizardStep("installing");
@@ -131,9 +87,40 @@ export default function App() {
       });
 
     // CLI 能力探测改为后台异步，不阻塞首屏
-    withTimeout(invoke<CliCapabilities>("detect_cli_capabilities"), 5000)
-      .then((caps) => setCliCaps(caps))
-      .catch(() => setCliCaps(null));
+    setCliCapsLoading(true);
+    const cliDetectStartedAt = Date.now();
+    // #region agent log
+    fetch('http://127.0.0.1:7244/ingest/266bf96a-5673-475a-a7f1-1ee0eed8a36c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1c7103'},body:JSON.stringify({sessionId:'1c7103',runId:'post-fix-cli-v2',hypothesisId:'N1',location:'src/App.tsx:init',message:'开始 CLI 能力探测（延长超时）',data:{timeoutMs:15000},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+    if (!cliCapsProbePromise) {
+      cliCapsProbePromise = withTimeout(invoke<CliCapabilities>("detect_cli_capabilities"), 15000)
+        .finally(() => {
+          cliCapsProbePromise = null;
+        });
+      // #region agent log
+      fetch('http://127.0.0.1:7244/ingest/266bf96a-5673-475a-a7f1-1ee0eed8a36c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1c7103'},body:JSON.stringify({sessionId:'1c7103',runId:'post-fix-cli-v3',hypothesisId:'N4',location:'src/App.tsx:init',message:'创建新的 CLI 探测任务',data:{timeoutMs:15000},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    } else {
+      // #region agent log
+      fetch('http://127.0.0.1:7244/ingest/266bf96a-5673-475a-a7f1-1ee0eed8a36c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1c7103'},body:JSON.stringify({sessionId:'1c7103',runId:'post-fix-cli-v3',hypothesisId:'N4',location:'src/App.tsx:init',message:'复用已有 CLI 探测任务，避免重复调用',data:{timeoutMs:15000},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
+    }
+    cliCapsProbePromise
+      .then((caps) => {
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/266bf96a-5673-475a-a7f1-1ee0eed8a36c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1c7103'},body:JSON.stringify({sessionId:'1c7103',runId:'post-fix-cli-v2',hypothesisId:'N1',location:'src/App.tsx:init',message:'CLI 能力探测成功',data:{elapsedMs:Date.now()-cliDetectStartedAt,has_onboarding:caps.has_onboarding,flags_count:caps.onboarding_flags.length},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        setCliCaps(caps);
+      })
+      .catch((err) => {
+        // #region agent log
+        fetch('http://127.0.0.1:7244/ingest/266bf96a-5673-475a-a7f1-1ee0eed8a36c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1c7103'},body:JSON.stringify({sessionId:'1c7103',runId:'post-fix-cli-v2',hypothesisId:'N2',location:'src/App.tsx:init',message:'CLI 能力探测失败或超时',data:{elapsedMs:Date.now()-cliDetectStartedAt,error:err instanceof Error?err.message:String(err)},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        setCliCaps(null);
+      })
+      .finally(() => {
+        setCliCapsLoading(false);
+      });
 
     return () => {
       unlistenLog.then((f) => f());
@@ -147,8 +134,41 @@ export default function App() {
   }, [view]);
 
   const handleSysCheckDone = (installDir: string) => {
-    setManifest((prev) => ({ ...(prev as AppManifest), install_dir: installDir }));
+    setManifest((prev) => ({
+      ...(prev ?? {
+        version: "1.0.0",
+        phase: "fresh",
+        install_dir: installDir,
+        gateway_port: 18789,
+        gateway_pid: null,
+        api_provider: "",
+        api_key_configured: false,
+        api_key_verified: false,
+        steps_done: [],
+        last_error: null,
+      }),
+      install_dir: installDir,
+    }));
     setWizardStep("installing");
+  };
+
+  const handleReadyConfigDetected = async () => {
+    const fallbackInstallDir = await invoke<string>("get_default_install_dir")
+      .catch(() => "C:\\OpenClaw");
+    setManifest((prev) => prev ?? {
+      version: "1.0.0",
+      phase: "complete",
+      install_dir: fallbackInstallDir,
+      gateway_port: 18789,
+      gateway_pid: null,
+      api_provider: "",
+      api_key_configured: true,
+      api_key_verified: false,
+      steps_done: [],
+      last_error: null,
+    });
+    setManagerAutoOpenConfig(false);
+    setView("manager");
   };
 
   const handleInstallDone = () => {
@@ -156,6 +176,9 @@ export default function App() {
   };
 
   const handleOnboardingDone = (summary: OnboardingSummary | null) => {
+    // #region agent log
+    fetch('http://127.0.0.1:7244/ingest/266bf96a-5673-475a-a7f1-1ee0eed8a36c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1c7103'},body:JSON.stringify({sessionId:'1c7103',runId:'post-fix-cli-v2',hypothesisId:'N3',location:'src/App.tsx:handleOnboardingDone',message:'离开第3步时 CLI 状态快照',data:{cliCapsPresent:!!cliCaps,cliCapsLoading,wizardStep:'onboarding'},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
     setOnboardingSummary(summary);
     setWizardStep("launching");
   };
@@ -176,6 +199,9 @@ export default function App() {
         <div className="flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-2 border-brand-400 border-t-transparent rounded-full animate-spin" />
           <span className="text-gray-400 text-sm">正在初始化环境...（{loadingSec}s）</span>
+          {cliCapsLoading && (
+            <span className="text-gray-500 text-xs">正在检测 CLI 能力...</span>
+          )}
           {loadingSec >= 12 && (
             <button
               onClick={() => {
@@ -217,7 +243,11 @@ export default function App() {
       </div>
       <div className="flex-1 overflow-hidden">
         {wizardStep === "syscheck" && (
-          <SysCheck envEstimate={envEstimate} onDone={handleSysCheckDone} />
+          <SysCheck
+            envEstimate={envEstimate}
+            onDone={handleSysCheckDone}
+            onReadyConfigDetected={handleReadyConfigDetected}
+          />
         )}
         {wizardStep === "installing" && (
           <Installing
@@ -231,6 +261,7 @@ export default function App() {
         {wizardStep === "onboarding" && (
           <OnboardingSetup
             cliCaps={cliCaps}
+            cliCapsLoading={cliCapsLoading}
             onDone={handleOnboardingDone}
           />
         )}

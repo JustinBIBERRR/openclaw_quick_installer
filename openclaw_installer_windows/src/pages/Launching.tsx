@@ -331,6 +331,10 @@ export default function Launching({ manifest, cliCaps, onboardingSummary, logs, 
 
   return (
     <div className="h-full flex flex-col px-6 py-4 gap-4 overflow-y-auto">
+      {/* 全局操作遮罩：异步任务进行时防止误触 */}
+      {(phase === "starting" || phase === "diagnosing" || phase === "fixing") && (
+        <div className="fixed inset-0 z-40 bg-slate-950/50 backdrop-blur-[1px] pointer-events-auto" />
+      )}
       <div>
         <h2 className="text-lg font-semibold text-gray-100">启动 Gateway</h2>
         <p className="text-sm text-gray-400 mt-0.5">

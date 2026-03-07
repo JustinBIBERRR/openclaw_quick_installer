@@ -48,6 +48,25 @@ export interface SysCheckItem {
   fix_action?: string;
 }
 
+export type SyscheckStage = "openclaw_config" | "admin" | "memory";
+
+export interface SyscheckOpenclawConfigResult {
+  openclaw_installed: boolean;
+  config_exists: boolean;
+  has_ready_config: boolean;
+}
+
+export interface SyscheckAdminResult {
+  admin: boolean;
+}
+
+export interface SyscheckMemoryResult {
+  total_gb: number;
+  available_gb: number;
+  recommended_gb: number;
+  ok: boolean;
+}
+
 export type GatewayStatus = "running" | "stopped" | "checking" | "starting";
 
 export type ApiProvider = "anthropic" | "openai" | "deepseek" | "custom";

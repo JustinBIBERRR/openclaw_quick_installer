@@ -88,6 +88,26 @@ pub struct CheckEnvironmentResult {
     pub manifest: Option<AppManifest>,
 }
 
+#[derive(Debug, Serialize)]
+pub struct SyscheckOpenclawConfigResult {
+    pub openclaw_installed: bool,
+    pub config_exists: bool,
+    pub has_ready_config: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SyscheckAdminResult {
+    pub admin: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SyscheckMemoryResult {
+    pub total_gb: f64,
+    pub available_gb: f64,
+    pub recommended_gb: f64,
+    pub ok: bool,
+}
+
 // ─── 结构化命令结果 ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -544,6 +564,51 @@ pub fn check_environment() -> CheckEnvironmentResult {
     }
 }
 
+/// 分步预检：OpenClaw 本地配置探测（用于首步快速判断）
+#[tauri::command]
+pub fn syscheck_openclaw_config() -> SyscheckOpenclawConfigResult {
+    refresh_path();
+    let openclaw_installed = find_openclaw_cmd_fast().is_some();
+    let config_exists = openclaw_config_dir()
+        .ok()
+        .and_then(|dir| std::fs::read_to_string(dir.join("openclaw.json")).ok())
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| {
+            v.get("models")
+                .and_then(|m| m.get("providers"))
+                .and_then(|p| p.as_object())
+                .map(|o| !o.is_empty())
+        })
+        .unwrap_or(false);
+
+    SyscheckOpenclawConfigResult {
+        openclaw_installed,
+        config_exists,
+        has_ready_config: openclaw_installed && config_exists,
+    }
+}
+
+/// 分步预检：管理员权限探测
+#[tauri::command]
+pub fn syscheck_admin() -> SyscheckAdminResult {
+    SyscheckAdminResult {
+        admin: check_admin(),
+    }
+}
+
+/// 分步预检：内存探测（推荐 >= 8GB）
+#[tauri::command]
+pub fn syscheck_memory() -> SyscheckMemoryResult {
+    let (total_gb, available_gb) = get_memory_info_gb();
+    let recommended_gb = 8.0;
+    SyscheckMemoryResult {
+        total_gb,
+        available_gb,
+        recommended_gb,
+        ok: total_gb >= recommended_gb,
+    }
+}
+
 /// 系统预检（纯 Rust 实现，不弹出 PowerShell 窗口）
 #[tauri::command]
 pub async fn run_syscheck(install_dir: String) -> Result<SysCheckResult, String> {
@@ -636,6 +701,38 @@ fn get_disk_free_gb(path: &str) -> f64 {
             .unwrap_or(99.0),
         Err(_) => 99.0,
     }
+}
+
+fn get_memory_info_gb() -> (f64, f64) {
+    let script = "(Get-CimInstance Win32_OperatingSystem | Select-Object TotalVisibleMemorySize,FreePhysicalMemory | ConvertTo-Json -Compress)";
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-Command", script])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    no_window!(cmd);
+
+    let output = match cmd.output() {
+        Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+        Err(_) => String::new(),
+    };
+    if output.is_empty() {
+        return (0.0, 0.0);
+    }
+    let v: serde_json::Value = match serde_json::from_str(&output) {
+        Ok(v) => v,
+        Err(_) => return (0.0, 0.0),
+    };
+    let total_kb = v
+        .get("TotalVisibleMemorySize")
+        .and_then(|x| x.as_f64())
+        .unwrap_or(0.0);
+    let free_kb = v
+        .get("FreePhysicalMemory")
+        .and_then(|x| x.as_f64())
+        .unwrap_or(0.0);
+
+    let to_gb = |kb: f64| kb / 1024.0 / 1024.0;
+    (to_gb(total_kb), to_gb(free_kb))
 }
 
 fn find_free_port(start: u16) -> u16 {
@@ -1829,9 +1926,7 @@ async fn run_onboarding_impl(
             args.push("--gateway-port".into());
             args.push("18789".into());
         }
-        if has_flag("--skip-channels") {
-            args.push("--skip-channels".into());
-        }
+        // channel 逻辑由下方新代码统一处理
         if prefs_arg.install_skills {
             if has_flag("--install-skills") {
                 args.push("--install-skills".into());
@@ -1861,18 +1956,14 @@ async fn run_onboarding_impl(
             args.push("--no-install-daemon".into());
         }
 
-        if let Some(channel) = prefs_arg.channel.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            if has_flag("--channel") {
-                args.push("--channel".into());
-                args.push(channel.to_string());
-            } else if has_flag("--channels") {
-                args.push("--channels".into());
-                args.push(channel.to_string());
-            } else {
-                skipped_items.push("channel".into());
-            }
-
-            if channel.eq_ignore_ascii_case("feishu")
+        // CLI 通过 --skip-channels 反向控制；channel 默认开启，用户启用时只需传飞书凭据
+        let channel_val = prefs_arg.channel.as_deref().map(str::trim).unwrap_or("").to_string();
+        if channel_val.is_empty() {
+            // 用户未启用 channel，传 --skip-channels
+            args.push("--skip-channels".into());
+        } else {
+            // 用户启用了 channel，传飞书凭据（若为 feishu）
+            if channel_val.eq_ignore_ascii_case("feishu")
                 && !feishu_id.is_empty()
                 && !feishu_secret.is_empty()
             {
@@ -1887,31 +1978,13 @@ async fn run_onboarding_impl(
             }
         }
 
-        if let Some(mode) = prefs_arg.launch_mode.as_deref() {
-            match mode {
-                "web" => {
-                    if has_flag("--ui") {
-                        args.push("--ui".into());
-                        args.push("web".into());
-                    } else if has_flag("--web") {
-                        args.push("--web".into());
-                    } else {
-                        skipped_items.push("launch_mode:web".into());
-                    }
-                }
-                "tui" => {
-                    if has_flag("--ui") {
-                        args.push("--ui".into());
-                        args.push("tui".into());
-                    } else if has_flag("--tui") {
-                        args.push("--tui".into());
-                    } else {
-                        skipped_items.push("launch_mode:tui".into());
-                    }
-                }
-                _ => {}
-            }
+        // CLI 通过 --skip-ui 反向控制；UI 模式无法通过参数选择（由 onboard 交互决定）
+        // 用户选择"不启动 UI"时才传 --skip-ui
+        let launch_mode_val = prefs_arg.launch_mode.as_deref().unwrap_or("");
+        if launch_mode_val == "none" || launch_mode_val == "skip" {
+            args.push("--skip-ui".into());
         }
+        // web/tui 模式不传参数，由 onboard 自己决策默认行为
 
         match provider_arg.as_str() {
             "anthropic" => {
@@ -1919,11 +1992,23 @@ async fn run_onboarding_impl(
                     args.push("--auth-choice".into());
                     args.push("anthropic-api-key".into());
                 }
-                if !key_arg.is_empty() && has_flag("--anthropic-api-key") {
-                    args.push("--anthropic-api-key".into());
-                    args.push(key_arg.clone());
-                } else if key_arg.is_empty() {
-                    skipped_items.push("anthropic_api_key".into());
+                // 优先用专属 flag，不存在则用 --custom-api-key 兜底
+                if !key_arg.is_empty() {
+                    if has_flag("--anthropic-api-key") {
+                        args.push("--anthropic-api-key".into());
+                        args.push(key_arg.clone());
+                    } else if has_flag("--custom-api-key") {
+                        args.push("--custom-api-key".into());
+                        args.push(key_arg.clone());
+                    } else {
+                        skipped_items.push("anthropic_api_key".into());
+                    }
+                }
+                if !model_arg.as_deref().unwrap_or("").trim().is_empty() {
+                    if has_flag("--custom-model-id") {
+                        args.push("--custom-model-id".into());
+                        args.push(model_arg.clone().unwrap_or_default());
+                    }
                 }
             }
             "openai" => {
@@ -1931,11 +2016,22 @@ async fn run_onboarding_impl(
                     args.push("--auth-choice".into());
                     args.push("openai-api-key".into());
                 }
-                if !key_arg.is_empty() && has_flag("--openai-api-key") {
-                    args.push("--openai-api-key".into());
-                    args.push(key_arg.clone());
-                } else if key_arg.is_empty() {
-                    skipped_items.push("openai_api_key".into());
+                if !key_arg.is_empty() {
+                    if has_flag("--openai-api-key") {
+                        args.push("--openai-api-key".into());
+                        args.push(key_arg.clone());
+                    } else if has_flag("--custom-api-key") {
+                        args.push("--custom-api-key".into());
+                        args.push(key_arg.clone());
+                    } else {
+                        skipped_items.push("openai_api_key".into());
+                    }
+                }
+                if !model_arg.as_deref().unwrap_or("").trim().is_empty() {
+                    if has_flag("--custom-model-id") {
+                        args.push("--custom-model-id".into());
+                        args.push(model_arg.clone().unwrap_or_default());
+                    }
                 }
             }
             "deepseek" => {
@@ -1998,6 +2094,28 @@ async fn run_onboarding_impl(
 
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
+        // 写入安装日志（记录最终传入的命令，便于排查）
+        {
+            let install_dir = std::env::var("USERPROFILE")
+                .map(|p| PathBuf::from(p).join("AppData").join("Local").join("OpenClaw"))
+                .unwrap_or_else(|_| PathBuf::from("C:\\OpenClaw"));
+            let log_dir = install_dir.join("installer-logs");
+            let _ = std::fs::create_dir_all(&log_dir);
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let log_path = log_dir.join(format!("onboard_args_{ts}.txt"));
+            let safe_args: Vec<String> = arg_refs.iter().map(|s| {
+                if s.len() > 6 && (s.starts_with("sk-") || s.contains("secret") || s.len() > 40) {
+                    format!("{}***", &s[..4.min(s.len())])
+                } else {
+                    s.to_string()
+                }
+            }).collect();
+            let _ = std::fs::write(&log_path, format!("args: {}\n", safe_args.join(" ")));
+        }
+
         let mut result = run_openclaw_cmd(&arg_refs);
         if result.success && !skipped_items.is_empty() {
             let skipped_text = skipped_items.join(", ");
@@ -2031,6 +2149,20 @@ async fn run_onboarding_impl(
                     format!("{prev}；另外写入飞书配置失败：{e}")
                 });
             }
+        }
+        // onboard 成功后将 provider/api_key_configured 回写到 manifest，使 Manager 页显示正确状态
+        if result.success && provider_arg != "skip" && !key_arg.trim().is_empty() {
+            let install_dir = std::env::var("USERPROFILE")
+                .map(|p| PathBuf::from(p).join("AppData").join("Local").join("OpenClaw"))
+                .unwrap_or_else(|_| PathBuf::from("C:\\OpenClaw"));
+            let mut manifest = read_manifest(&install_dir.to_string_lossy()).unwrap_or_default();
+            manifest.install_dir = install_dir.to_string_lossy().into_owned();
+            manifest.api_provider = provider_arg.clone();
+            manifest.api_key_configured = true;
+            if !manifest.steps_done.contains(&"config_written".to_string()) {
+                manifest.steps_done.push("config_written".into());
+            }
+            let _ = write_manifest(&manifest);
         }
         if result.success {
             if let Some(model_name) = model_arg.as_deref().map(str::trim).filter(|s| !s.is_empty()) {

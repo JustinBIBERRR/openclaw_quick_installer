@@ -2,9 +2,15 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   CheckCircle, XCircle, AlertCircle, Loader,
-  ShieldCheck, ExternalLink,
+  ShieldCheck,
 } from "lucide-react";
-import type { AdminRelaunchResult, SysCheckItem } from "../types";
+import type {
+  AdminRelaunchResult,
+  SysCheckItem,
+  SyscheckAdminResult,
+  SyscheckMemoryResult,
+  SyscheckOpenclawConfigResult,
+} from "../types";
 import type { EnvEstimate } from "../utils/estimate";
 import { getFullWizardEstimate } from "../utils/estimate";
 
@@ -13,32 +19,25 @@ const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window
 interface Props {
   envEstimate: EnvEstimate | null;
   onDone: (installDir: string) => void;
+  onReadyConfigDetected?: () => void;
 }
 
 const CHECK_META: Record<string, { label: string; tip: string }> = {
+  openclaw_config: {
+    label: "OpenClaw 本地配置",
+    tip: "优先检查是否已安装且已有可用配置；若已就绪可直接进入 Manager。",
+  },
   admin: {
     label: "管理员权限",
     tip: "安装器需要管理员权限以安装 Node.js 和 OpenClaw CLI。",
   },
-  webview2: {
-    label: "Windows 系统浏览器内核",
-    tip: "OpenClaw 界面依赖 Edge/WebView2 渲染。Windows 11 已内置，Windows 10 可能需要额外安装。",
-  },
-  disk: {
-    label: "磁盘空间（需 2GB）",
-    tip: "Node.js + OpenClaw 约需 500MB，建议至少预留 2GB。",
-  },
-  port: {
-    label: "端口 18789 可用",
-    tip: "OpenClaw Gateway 默认监听此端口。若被占用会自动切换。",
-  },
-  network: {
-    label: "网络连通性",
-    tip: "安装时需要访问 npmmirror.com 下载 OpenClaw，国内直连速度较快。",
+  memory: {
+    label: "内存状态",
+    tip: "建议总内存 >= 8GB，内存不足时可先关闭其他占用较高应用。",
   },
 };
 
-export default function SysCheck({ envEstimate, onDone }: Props) {
+export default function SysCheck({ envEstimate, onDone, onReadyConfigDetected }: Props) {
   const [checks, setChecks] = useState<SysCheckItem[]>(
     Object.entries(CHECK_META).map(([key, m]) => ({
       key, label: m.label, status: "checking", detail: "检测中..."
@@ -47,10 +46,9 @@ export default function SysCheck({ envEstimate, onDone }: Props) {
   const [installDir, setInstallDir] = useState("");
   const [done, setDone] = useState(false);
   const [adminFailed, setAdminFailed] = useState(false);
-  const [webview2Missing, setWebview2Missing] = useState(false);
   const [relaunching, setRelaunching] = useState(false);
   const [adminRelaunchMessage, setAdminRelaunchMessage] = useState("");
-  const [pathIssue, setPathIssue] = useState("");
+  const [readyConfigDetected, setReadyConfigDetected] = useState(false);
 
   const updateCheck = (key: string, update: Partial<SysCheckItem>) => {
     setChecks((prev) => prev.map((c) => (c.key === key ? { ...c, ...update } : c)));
@@ -61,28 +59,27 @@ export default function SysCheck({ envEstimate, onDone }: Props) {
       if (!isTauri) {
         const fallback = "C:\\OpenClaw";
         setInstallDir(fallback);
-        runChecks(fallback);
+        runChecks();
         return;
       }
       try {
         const dir = await invoke<string>("get_default_install_dir");
         setInstallDir(dir);
-        runChecks(dir);
+        runChecks();
       } catch {
         const fallback = "C:\\OpenClaw";
         setInstallDir(fallback);
-        runChecks(fallback);
+        runChecks();
       }
     }
     init();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function runChecks(dir: string) {
+  async function runChecks() {
     setDone(false);
     setAdminFailed(false);
-    setWebview2Missing(false);
-    setPathIssue("");
+    setReadyConfigDetected(false);
     setChecks((prev) => prev.map((c) => ({ ...c, status: "checking", detail: "检测中..." })));
 
     if (!isTauri) {
@@ -94,45 +91,45 @@ export default function SysCheck({ envEstimate, onDone }: Props) {
     }
 
     try {
-      const r = await invoke<{
-        admin: boolean; webview2: boolean; disk_gb: number;
-        port: number; path_valid: boolean; path_issue: string;
-        network_ok: boolean; suggested_dir: string;
-      }>("run_syscheck", { installDir: dir });
-
-      updateCheck("admin", {
-        status: r.admin ? "ok" : "error",
-        detail: r.admin ? "已获取管理员权限" : "未以管理员身份运行",
+      // Step 1: 配置检查（优先）
+      const configResult = await invoke<SyscheckOpenclawConfigResult>("syscheck_openclaw_config");
+      updateCheck("openclaw_config", {
+        status: configResult.has_ready_config ? "ok" : "warn",
+        detail: configResult.has_ready_config
+          ? "检测到本地 OpenClaw 已安装且配置完整，可直接进入 Manager"
+          : configResult.openclaw_installed
+            ? "已安装 OpenClaw，但未检测到完整配置"
+            : "未检测到 OpenClaw 安装，将继续预检并引导安装",
       });
-      updateCheck("webview2", {
-        status: r.webview2 ? "ok" : "warn",
-        detail: r.webview2
-          ? "已安装 (Edge/WebView2)"
-          : "未检测到，安装完成后界面可能无法显示",
-      });
-      updateCheck("disk", {
-        status: r.disk_gb >= 2 ? "ok" : "warn",
-        detail: `可用空间: ${r.disk_gb.toFixed(1)} GB${r.disk_gb < 2 ? "，建议至少 2GB" : ""}`,
-      });
-      updateCheck("port", {
-        status: "ok",
-        detail: r.port === 18789
-          ? "端口 18789 空闲"
-          : `18789 已被占用，将使用端口 ${r.port}`,
-      });
-      updateCheck("network", {
-        status: r.network_ok ? "ok" : "warn",
-        detail: r.network_ok
-          ? "可访问 npmmirror.com，下载速度良好"
-          : "网络受限，安装可能较慢，请检查网络后继续",
-      });
-
-      setAdminFailed(!r.admin);
-      setWebview2Missing(!r.webview2);
-      if (!r.path_valid) {
-        setPathIssue(r.path_issue || `建议使用 ${r.suggested_dir}`);
-        setInstallDir(r.suggested_dir || dir);
+      if (configResult.has_ready_config) {
+        setReadyConfigDetected(true);
+        setDone(true);
+        onReadyConfigDetected?.();
+        return;
       }
+
+      // Step 2: 管理员权限检查
+      const adminResult = await invoke<SyscheckAdminResult>("syscheck_admin");
+      updateCheck("admin", {
+        status: adminResult.admin ? "ok" : "error",
+        detail: adminResult.admin ? "已获取管理员权限" : "未以管理员身份运行",
+      });
+      setAdminFailed(!adminResult.admin);
+      if (!adminResult.admin) {
+        updateCheck("memory", {
+          status: "warn",
+          detail: "请先通过管理员权限检查后再继续检测内存",
+        });
+        setDone(true);
+        return;
+      }
+
+      // Step 3: 内存检查
+      const memoryResult = await invoke<SyscheckMemoryResult>("syscheck_memory");
+      updateCheck("memory", {
+        status: memoryResult.ok ? "ok" : "warn",
+        detail: `总内存 ${memoryResult.total_gb.toFixed(1)} GB，可用 ${memoryResult.available_gb.toFixed(1)} GB，建议 >= ${memoryResult.recommended_gb.toFixed(0)} GB`,
+      });
       setDone(true);
     } catch {
       setChecks((prev) => prev.map((c) =>
@@ -170,7 +167,7 @@ export default function SysCheck({ envEstimate, onDone }: Props) {
     return <XCircle size={15} className="text-red-400" />;
   };
 
-  const canProceed = done && !adminFailed;
+  const canProceed = done && !adminFailed && !readyConfigDetected;
 
   return (
     <div className="h-full flex flex-col overflow-hidden">
@@ -178,7 +175,7 @@ export default function SysCheck({ envEstimate, onDone }: Props) {
         <div>
           <h2 className="text-lg font-semibold text-gray-100">系统预检</h2>
           <p className="text-sm text-gray-400 mt-0.5">
-            正在检测安装环境，全部通过后即可开始安装
+            按顺序检测本地配置、权限与内存状态，减少一次性检测造成的卡顿
             {envEstimate && (
               <span className="text-gray-500 ml-1">（预计剩余 {getFullWizardEstimate(envEstimate)}）</span>
             )}
@@ -218,29 +215,6 @@ export default function SysCheck({ envEstimate, onDone }: Props) {
           </div>
         )}
 
-        {webview2Missing && (
-          <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-lg p-2.5 flex items-start gap-2">
-            <AlertCircle size={14} className="text-yellow-400 mt-0.5 flex-shrink-0" />
-            <div className="text-xs text-yellow-300/90">
-              <p className="font-medium">需要安装 Windows 系统浏览器内核 (WebView2)</p>
-              <button
-                onClick={() => invoke("open_url", { url: "https://go.microsoft.com/fwlink/p/?LinkId=2124703" })}
-                className="flex items-center gap-1 mt-1 text-yellow-300 hover:text-yellow-200 underline underline-offset-2"
-              >
-                <ExternalLink size={11} />
-                点击下载 WebView2 运行时（微软官方）
-              </button>
-            </div>
-          </div>
-        )}
-
-        {!!pathIssue && (
-          <div className="bg-yellow-900/20 border border-yellow-700/40 rounded-lg p-2.5">
-            <p className="text-xs text-yellow-300/90">
-              路径建议：{pathIssue}
-            </p>
-          </div>
-        )}
       </div>
 
       <div className="flex-1 overflow-y-auto px-6 pb-2">
@@ -269,7 +243,9 @@ export default function SysCheck({ envEstimate, onDone }: Props) {
 
       {done && (
         <div className="flex-shrink-0 flex items-center justify-between px-6 py-3 border-t border-gray-800">
-          {adminFailed ? (
+          {readyConfigDetected ? (
+            <p className="text-xs text-brand-300">已检测到本地配置，正在进入 Manager...</p>
+          ) : adminFailed ? (
             <p className="text-xs text-red-400">请先以管理员身份重新运行安装器</p>
           ) : checks.some((c) => c.status === "warn") ? (
             <p className="text-xs text-yellow-500">存在警告项，建议处理后再继续</p>

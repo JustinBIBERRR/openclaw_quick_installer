@@ -26,4 +26,4 @@ All notable changes to the OpenClaw Installer for Windows are documented in this
 
 ---
 
-[1.3.0]: https://github.com/your-org/openclaw-installer/releases/tag/v1.3.0
+[1.3.0]: https://github.com/JustinBIBERRR/openclaw_quick_installer/releases/tag/v1.3.0

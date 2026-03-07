@@ -8,7 +8,7 @@ import {
 import StatusDot from "../components/StatusDot";
 import TitleBar from "../components/TitleBar";
 import UnifiedConfigPanel from "../components/UnifiedConfigPanel";
-import type { AppManifest, GatewayStatus, DoctorResult, CommandResult, CliCapabilities } from "../types";
+import type { AppManifest, GatewayStatus, DoctorResult, CommandResult, CliCapabilities, CheckEnvironmentResult } from "../types";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const BTN_PRIMARY = "h-10 px-4 inline-flex items-center justify-center gap-2 bg-brand-500 hover:bg-brand-600 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-sm font-semibold rounded-xl transition-colors";
@@ -42,6 +42,7 @@ function buildManagerRecoveryHint(message: string, backendHint: string | null): 
 }
 
 export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChange, onManifestChange, autoOpenConfig = false }: Props) {
+  const [initialChecking, setInitialChecking] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastErrorHint, setLastErrorHint] = useState<string | null>(null);
@@ -54,12 +55,36 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
   const port = manifest.gateway_port || 18789;
   const chatUrl = `http://localhost:${port}/chat`;
 
+  useEffect(() => {
+    let cancelled = false;
+    async function bootstrapManager() {
+      setInitialChecking(true);
+      try {
+        const env = await invoke<CheckEnvironmentResult>("check_environment");
+        if (!cancelled && env.manifest && onManifestChange) {
+          onManifestChange(env.manifest);
+        }
+      } catch {
+        // ignore first-screen probe failures
+      } finally {
+        if (!cancelled) {
+          setInitialChecking(false);
+        }
+      }
+    }
+    bootstrapManager();
+    return () => {
+      cancelled = true;
+    };
+  }, [onManifestChange]);
+
   // 定期轮询 Gateway 状态
   useEffect(() => {
+    if (initialChecking) return;
     checkStatus();
     const timer = setInterval(checkStatus, 5000);
     return () => clearInterval(timer);
-  }, [port]);
+  }, [port, initialChecking]);
 
   useEffect(() => {
     if (autoOpenConfig && !manifest.api_key_configured) {
@@ -285,6 +310,21 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
 
   const configMissing = !manifest.api_key_configured;
 
+  if (initialChecking) {
+    return (
+      <div className="h-screen flex flex-col bg-slate-950">
+        <TitleBar title="OpenClaw Manager" />
+        <div className="flex-1 flex items-center justify-center px-6">
+          <div className="flex flex-col items-center gap-3">
+            <Loader size={24} className="animate-spin text-brand-400" />
+            <p className="text-sm text-slate-300">正在检测用户本地 openclaw 配置...</p>
+            <p className="text-xs text-slate-500">检测完成后将自动回填 Manager 页面</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-screen flex flex-col bg-slate-950">
       <TitleBar title="OpenClaw Manager" />
@@ -328,14 +368,6 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
             </div>
             <div className="mt-4 flex flex-wrap gap-2.5">
               <button
-                onClick={startAndOpenChat}
-                disabled={actionLoading !== null || openingChat || chatLocked}
-              className={BTN_PRIMARY}
-              >
-                {actionLoading === "start_open" || openingChat ? <Loader size={14} className="animate-spin" /> : <ExternalLink size={14} />}
-                启动并打开 Chat
-              </button>
-              <button
                 onClick={() => setShowConfigPanel(true)}
               className={`flex items-center gap-2 px-4 py-2.5 text-sm rounded-xl transition-all
                 ${configMissing
@@ -344,7 +376,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
                 }`}
               >
                 <FileEdit size={14} />
-              {configMissing ? "先完成综合配置" : "打开综合配置"}
+              {configMissing ? "先完成综合配置" : "综合配置"}
               </button>
               <button
                 onClick={runDiagnose}
@@ -397,18 +429,18 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
                 <button
                   onClick={() => doAction("restart")}
                   disabled={actionLoading !== null}
-                    className={BTN_SECONDARY}
+                  title="重启 Gateway"
+                    className={`${BTN_SECONDARY} w-10 px-0`}
                 >
                   <RefreshCw size={14} className={actionLoading === "restart" ? "animate-spin" : ""} />
-                  重启
                 </button>
                 <button
                   onClick={() => doAction("stop")}
                   disabled={actionLoading !== null}
-                    className={BTN_SECONDARY}
+                  title="停止 Gateway"
+                    className={`${BTN_SECONDARY} w-10 px-0`}
                 >
                   <Square size={14} />
-                  停止
                 </button>
               </>
             ) : gatewayStatus === "starting" ? (
@@ -439,10 +471,10 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
                 <button
                   onClick={() => doAction("start")}
                   disabled={actionLoading !== null}
-                    className={BTN_SECONDARY}
+                  title="仅启动 Gateway，不打开 Chat"
+                    className={`${BTN_SECONDARY} w-10 px-0`}
                 >
                   <Play size={14} />
-                  仅启动
                 </button>
               </>
             )}
