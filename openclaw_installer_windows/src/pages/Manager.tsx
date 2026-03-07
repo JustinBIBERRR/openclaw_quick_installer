@@ -7,9 +7,13 @@ import {
 } from "lucide-react";
 import StatusDot from "../components/StatusDot";
 import TitleBar from "../components/TitleBar";
+import UnifiedConfigPanel from "../components/UnifiedConfigPanel";
 import type { AppManifest, GatewayStatus, DoctorResult, CommandResult, CliCapabilities } from "../types";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+const BTN_PRIMARY = "h-10 px-4 inline-flex items-center justify-center gap-2 bg-brand-500 hover:bg-brand-600 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-sm font-semibold rounded-xl transition-colors";
+const BTN_SECONDARY = "h-10 px-4 inline-flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 disabled:opacity-50 text-slate-200 text-sm rounded-xl transition-colors";
+const BTN_DANGER = "h-10 px-4 inline-flex items-center justify-center gap-2 bg-red-900/40 hover:bg-red-800/50 border border-red-800/50 disabled:opacity-50 text-red-300 text-sm rounded-xl transition-colors";
 
 interface Props {
   manifest: AppManifest;
@@ -17,6 +21,7 @@ interface Props {
   gatewayStatus: GatewayStatus;
   onStatusChange: (s: GatewayStatus) => void;
   onManifestChange?: (m: AppManifest) => void;
+  autoOpenConfig?: boolean;
 }
 
 function buildManagerRecoveryHint(message: string, backendHint: string | null): string | null {
@@ -36,7 +41,7 @@ function buildManagerRecoveryHint(message: string, backendHint: string | null): 
   return backendHint;
 }
 
-export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChange }: Props) {
+export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChange, onManifestChange, autoOpenConfig = false }: Props) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
   const [lastErrorHint, setLastErrorHint] = useState<string | null>(null);
@@ -44,6 +49,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
   const [showDoctorPanel, setShowDoctorPanel] = useState(false);
   const [openingChat, setOpeningChat] = useState(false);
   const [chatLocked, setChatLocked] = useState(false);
+  const [showConfigPanel, setShowConfigPanel] = useState(false);
 
   const port = manifest.gateway_port || 18789;
   const chatUrl = `http://localhost:${port}/chat`;
@@ -54,6 +60,12 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
     const timer = setInterval(checkStatus, 5000);
     return () => clearInterval(timer);
   }, [port]);
+
+  useEffect(() => {
+    if (autoOpenConfig && !manifest.api_key_configured) {
+      setShowConfigPanel(true);
+    }
+  }, [autoOpenConfig, manifest.api_key_configured]);
 
   async function checkStatus() {
     try {
@@ -74,38 +86,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
     
     try {
       if (action === "start") {
-        onStatusChange("starting");
-        const result = await invoke<CommandResult>("start_gateway_bg", {
-          installDir: manifest.install_dir,
-          port,
-        });
-        if (!result.success) {
-          setLastError(result.message);
-          setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint));
-          onStatusChange("stopped");
-          return;
-        }
-        // 等待并检查状态
-        await new Promise((r) => setTimeout(r, 3000));
-        const status = await invoke<string>("get_gateway_status", { installDir: manifest.install_dir, port });
-        if (status !== "running") {
-          // 启动可能失败，检查几次
-          let retries = 3;
-          while (retries > 0) {
-            await new Promise((r) => setTimeout(r, 2000));
-            const s = await invoke<string>("get_gateway_status", { installDir: manifest.install_dir, port });
-            if (s === "running") {
-              onStatusChange("running");
-              return;
-            }
-            retries--;
-          }
-          setLastError("Gateway 启动失败，请检查配置或运行诊断");
-          setLastErrorHint("可能是配置文件问题或端口被占用");
-          onStatusChange("stopped");
-        } else {
-          onStatusChange("running");
-        }
+        await ensureGatewayRunning();
       } else if (action === "stop" || action === "force_stop") {
         await invoke("kill_gateway_process", { installDir: manifest.install_dir, port });
         onStatusChange("stopped");
@@ -131,6 +112,43 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
     } finally {
       setActionLoading(null);
     }
+  }
+
+  async function ensureGatewayRunning(): Promise<boolean> {
+    onStatusChange("starting");
+    const result = await invoke<CommandResult>("start_gateway_bg", {
+      installDir: manifest.install_dir,
+      port,
+    });
+    if (!result.success) {
+      setLastError(result.message);
+      setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint));
+      onStatusChange("stopped");
+      return false;
+    }
+
+    await new Promise((r) => setTimeout(r, 3000));
+    const status = await invoke<string>("get_gateway_status", { installDir: manifest.install_dir, port });
+    if (status === "running") {
+      onStatusChange("running");
+      return true;
+    }
+
+    let retries = 3;
+    while (retries > 0) {
+      await new Promise((r) => setTimeout(r, 2000));
+      const s = await invoke<string>("get_gateway_status", { installDir: manifest.install_dir, port });
+      if (s === "running") {
+        onStatusChange("running");
+        return true;
+      }
+      retries--;
+    }
+
+    setLastError("Gateway 启动失败，请检查配置或运行诊断");
+    setLastErrorHint("可能是配置文件问题或端口被占用");
+    onStatusChange("stopped");
+    return false;
   }
 
   async function runDiagnose() {
@@ -218,6 +236,38 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
     }
   }
 
+  async function startAndOpenChat() {
+    if (actionLoading !== null || openingChat || chatLocked) return;
+    setActionLoading("start_open");
+    setLastError(null);
+    setLastErrorHint(null);
+    try {
+      const started = await ensureGatewayRunning();
+      if (started) {
+        await openChat();
+      }
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setLastError(msg);
+      setLastErrorHint(buildManagerRecoveryHint(msg, null));
+      onStatusChange("stopped");
+    } finally {
+      setActionLoading(null);
+    }
+  }
+
+  async function refreshManifestState() {
+    if (!onManifestChange) return;
+    try {
+      const env = await invoke<{ manifest: AppManifest | null }>("check_environment");
+      if (env.manifest) {
+        onManifestChange(env.manifest);
+      }
+    } catch {
+      // ignore refresh failures
+    }
+  }
+
   const providerLabel: Record<string, string> = {
     anthropic: "Anthropic Claude",
     openai: "OpenAI GPT",
@@ -226,29 +276,105 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
     skip: "未配置",
   };
 
+  const gatewayStatusLabel: Record<GatewayStatus, string> = {
+    running: "运行中",
+    stopped: "未启动",
+    checking: "检测中",
+    starting: "启动中",
+  };
+
+  const configMissing = !manifest.api_key_configured;
+
   return (
-    <div className="h-screen flex flex-col bg-gray-950">
+    <div className="h-screen flex flex-col bg-slate-950">
       <TitleBar title="OpenClaw Manager" />
 
-      <div className="flex-1 overflow-y-auto px-6 py-5 flex flex-col gap-4">
+      <div className="flex-1 overflow-y-auto px-6 py-6">
+        <div className="w-full max-w-6xl mx-auto flex flex-col gap-4">
+          <div className="rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-900/60 p-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs uppercase tracking-wide text-slate-500">Workspace Overview</p>
+                <h2 className="text-xl font-semibold text-slate-100 mt-1">OpenClaw 控制台</h2>
+                <p className="text-sm text-slate-400 mt-1">
+                  {configMissing ? "检测到尚未完成配置，建议先完成综合配置再启动 Chat。" : "可直接启动并打开 Chat，或按需修改配置。"}
+                </p>
+              </div>
+              <span className={`px-3 py-1.5 text-xs rounded-full border ${
+                gatewayStatus === "running"
+                  ? "border-emerald-400/40 text-emerald-200 bg-emerald-500/15"
+                  : gatewayStatus === "starting"
+                    ? "border-amber-400/40 text-amber-200 bg-amber-500/15"
+                    : "border-slate-700 text-slate-300 bg-slate-800/70"
+              }`}>
+                Gateway {gatewayStatusLabel[gatewayStatus]}
+              </span>
+            </div>
+            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3.5">
+                <p className="text-xs text-slate-500">Chat 地址</p>
+                <p className="text-sm text-slate-200 font-mono mt-1 break-all">{chatUrl}</p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3.5">
+                <p className="text-xs text-slate-500">API 状态</p>
+                <p className={`text-sm mt-1 ${configMissing ? "text-yellow-400" : "text-slate-200"}`}>
+                  {configMissing ? "未配置（建议先配置）" : "已配置"}
+                </p>
+              </div>
+              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3.5">
+                <p className="text-xs text-slate-500">安装目录</p>
+                <p className="text-sm text-slate-300 mt-1 truncate">{manifest.install_dir}</p>
+              </div>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2.5">
+              <button
+                onClick={startAndOpenChat}
+                disabled={actionLoading !== null || openingChat || chatLocked}
+              className={BTN_PRIMARY}
+              >
+                {actionLoading === "start_open" || openingChat ? <Loader size={14} className="animate-spin" /> : <ExternalLink size={14} />}
+                启动并打开 Chat
+              </button>
+              <button
+                onClick={() => setShowConfigPanel(true)}
+              className={`flex items-center gap-2 px-4 py-2.5 text-sm rounded-xl transition-all
+                ${configMissing
+                  ? "bg-brand-500/15 hover:bg-brand-500/20 border border-brand-400/60 text-brand-200 shadow-[0_0_0_1px_rgba(16,185,129,0.25)]"
+                  : "bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200"
+                }`}
+              >
+                <FileEdit size={14} />
+              {configMissing ? "先完成综合配置" : "打开综合配置"}
+              </button>
+              <button
+                onClick={runDiagnose}
+                disabled={actionLoading !== null || !cliCaps?.has_doctor}
+              className={BTN_SECONDARY}
+              >
+                <Stethoscope size={14} />
+                诊断
+              </button>
+            </div>
+          </div>
+
         {/* 状态卡片 */}
-        <div className="bg-gray-900 rounded-xl border border-gray-700 p-5">
+          <div className="bg-gradient-to-b from-slate-900 to-slate-900/70 rounded-2xl border border-slate-800 p-6 shadow-sm">
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h3 className="text-base font-semibold text-gray-100">Gateway 状态</h3>
-              <p className="text-xs text-gray-500 mt-0.5">{chatUrl}</p>
+                <h3 className="text-lg font-semibold text-slate-100">Gateway 状态</h3>
+                <p className="text-xs text-slate-500 mt-1">默认入口：{chatUrl}</p>
             </div>
             <StatusDot status={gatewayStatus} />
           </div>
 
-          <div className="grid grid-cols-2 gap-2 mb-4 text-sm">
-            <div className="bg-gray-800 rounded-lg p-3">
-              <p className="text-xs text-gray-500 mb-0.5">监听端口</p>
-              <p className="text-gray-200 font-mono">{port}</p>
+            <div className="grid grid-cols-2 gap-3 mb-5 text-sm">
+              <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-3.5">
+                <p className="text-xs text-slate-500 mb-1">监听端口</p>
+              <p className="text-slate-200 font-mono">{port}</p>
             </div>
-            <div className="bg-gray-800 rounded-lg p-3">
-              <p className="text-xs text-gray-500 mb-0.5">AI 服务</p>
-              <p className="text-gray-200">
+              <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-3.5">
+                <p className="text-xs text-slate-500 mb-1">AI 服务</p>
+              <p className="text-slate-200">
                 {manifest.api_key_configured
                   ? providerLabel[manifest.api_provider] || manifest.api_provider
                   : <span className="text-yellow-500">未配置</span>}
@@ -257,13 +383,13 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
           </div>
 
           {/* 主操作按钮 */}
-          <div className="flex gap-2">
+            <div className="flex gap-2.5">
             {gatewayStatus === "running" ? (
               <>
                 <button
                   onClick={openChat}
                   disabled={openingChat || chatLocked}
-                  className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-brand-500 hover:bg-brand-600 disabled:bg-gray-700 disabled:text-gray-400 text-gray-950 font-semibold text-sm rounded-lg transition-colors"
+                    className={`${BTN_PRIMARY} flex-1`}
                 >
                   {openingChat ? <Loader size={15} className="animate-spin" /> : <ExternalLink size={15} />}
                   {openingChat ? "打开中..." : chatLocked ? "请稍候..." : "打开 Chat 界面"}
@@ -271,7 +397,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
                 <button
                   onClick={() => doAction("restart")}
                   disabled={actionLoading !== null}
-                  className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-lg transition-colors disabled:opacity-50"
+                    className={BTN_SECONDARY}
                 >
                   <RefreshCw size={14} className={actionLoading === "restart" ? "animate-spin" : ""} />
                   重启
@@ -279,7 +405,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
                 <button
                   onClick={() => doAction("stop")}
                   disabled={actionLoading !== null}
-                  className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-lg transition-colors disabled:opacity-50"
+                    className={BTN_SECONDARY}
                 >
                   <Square size={14} />
                   停止
@@ -287,35 +413,45 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
               </>
             ) : gatewayStatus === "starting" ? (
               <div className="flex gap-2 w-full">
-                <div className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-gray-800 text-gray-400 text-sm rounded-lg">
+                <div className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-slate-800 text-slate-400 text-sm rounded-xl border border-slate-700">
                   <RefreshCw size={14} className="animate-spin" />
                   启动中...
                 </div>
                 <button
                   onClick={() => doAction("force_stop")}
                   disabled={actionLoading !== null}
-                  className="flex items-center justify-center gap-2 px-4 py-2.5 bg-red-900/50 hover:bg-red-800/60 text-red-300 text-sm rounded-lg transition-colors disabled:opacity-50"
+                    className={BTN_DANGER}
                 >
                   <Square size={14} />
                   停止
                 </button>
               </div>
             ) : (
-              <button
-                onClick={() => doAction("start")}
-                disabled={actionLoading !== null}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-brand-500 hover:bg-brand-600 disabled:bg-gray-700 disabled:text-gray-500 text-gray-950 font-semibold text-sm rounded-lg transition-colors"
-              >
-                <Play size={14} />
-                启动 Gateway
-              </button>
+              <>
+                <button
+                  onClick={startAndOpenChat}
+                  disabled={actionLoading !== null || openingChat || chatLocked}
+                    className={`${BTN_PRIMARY} flex-1`}
+                >
+                  {actionLoading === "start_open" || openingChat ? <Loader size={14} className="animate-spin" /> : <ExternalLink size={14} />}
+                  {actionLoading === "start_open" || openingChat ? "启动中..." : "启动并打开 Chat"}
+                </button>
+                <button
+                  onClick={() => doAction("start")}
+                  disabled={actionLoading !== null}
+                    className={BTN_SECONDARY}
+                >
+                  <Play size={14} />
+                  仅启动
+                </button>
+              </>
             )}
           </div>
         </div>
 
         {/* 错误提示卡片 */}
         {lastError && (
-          <div className="bg-red-900/20 border border-red-800/50 rounded-xl p-4">
+            <div className="bg-red-900/20 border border-red-800/50 rounded-2xl p-4">
             <div className="flex items-start justify-between">
               <div className="flex items-start gap-3">
                 <AlertTriangle size={18} className="text-red-400 flex-shrink-0 mt-0.5" />
@@ -355,23 +491,23 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
         )}
 
         {/* 诊断结果面板 */}
-        {showDoctorPanel && (
-          <div className="bg-gray-900 rounded-xl border border-gray-700 p-4">
+          {showDoctorPanel && (
+            <div className="bg-slate-900/80 rounded-2xl border border-slate-800 p-4">
             <div className="flex items-center justify-between mb-3">
-              <h4 className="text-sm font-medium text-gray-200 flex items-center gap-2">
+              <h4 className="text-sm font-medium text-slate-200 flex items-center gap-2">
                 <Stethoscope size={16} className="text-yellow-400" />
                 诊断结果
               </h4>
               <button
                 onClick={() => { setShowDoctorPanel(false); setDoctorResult(null); }}
-                className="text-gray-500 hover:text-gray-300 transition-colors"
+                className="text-slate-500 hover:text-slate-300 transition-colors"
               >
                 <X size={16} />
               </button>
             </div>
             
             {actionLoading === "diagnose" ? (
-              <div className="flex items-center gap-2 text-gray-400 text-sm">
+              <div className="flex items-center gap-2 text-slate-400 text-sm">
                 <Loader size={14} className="animate-spin" />
                 正在诊断...
               </div>
@@ -381,7 +517,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
                   {doctorResult.summary}
                 </div>
                 {doctorResult.issues.length > 0 && (
-                  <ul className="text-xs space-y-1 pl-2 border-l-2 border-gray-700">
+                  <ul className="text-xs space-y-1 pl-2 border-l-2 border-slate-700">
                     {doctorResult.issues.map((issue, i) => (
                       <li key={i} className={`pl-2 ${issue.severity === "error" ? "text-red-400" : "text-yellow-500"}`}>
                         {issue.message}
@@ -401,7 +537,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
                   <button
                     onClick={runDiagnose}
                     disabled={actionLoading !== null}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-300 text-xs rounded-lg transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs rounded-lg transition-colors disabled:opacity-50"
                   >
                     <RefreshCw size={12} />
                     重新诊断
@@ -409,86 +545,133 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
                 </div>
               </div>
             ) : (
-              <p className="text-xs text-gray-500">点击"诊断问题"开始检测</p>
+              <p className="text-xs text-slate-500">点击"诊断问题"开始检测</p>
             )}
           </div>
         )}
 
         {/* 快捷操作列表 */}
-        <div className="bg-gray-900 rounded-xl border border-gray-700 divide-y divide-gray-800">
-          <ActionRow
-            icon={<Stethoscope size={16} className="text-yellow-400" />}
-            label="诊断与修复"
-            desc="运行 openclaw doctor 检测并修复问题"
-            loading={actionLoading === "diagnose"}
-            onClick={runDiagnose}
-          />
-          <ActionRow
-            icon={<FolderOpen size={16} className="text-blue-400" />}
-            label="查看 installer 日志"
-            desc="%USERPROFILE%\\.openclaw\\installer-logs"
-            onClick={openLogDirectory}
-          />
-          <ActionRow
-            icon={<FolderOpen size={16} className="text-blue-400" />}
-            label="查看运行日志"
-            desc="<install_dir>\\logs"
-            onClick={openRuntimeLogDirectory}
-          />
-          <ActionRow
-            icon={<FileEdit size={16} />}
-            label="修改 API Key"
-            desc={manifest.api_key_configured ? "编辑 ~/.openclaw/openclaw.json 配置文件" : "打开配置文件设置 API Key"}
-            onClick={async () => {
-              try {
-                await invoke("open_config_file");
-              } catch (e) {
-                console.error("打开配置文件失败:", e);
-              }
-            }}
-          />
-          <ActionRow
-            icon={<FolderOpen size={16} />}
-            label="安装目录"
-            desc={manifest.install_dir}
-            onClick={async () => {
-              try {
-                await invoke("open_folder", { path: manifest.install_dir });
-              } catch (e) {
-                console.error("打开目录失败:", e);
-              }
-            }}
-          />
-          <ActionRow
-            icon={<Trash2 size={16} className="text-red-400" />}
-            label={<span className="text-red-400">卸载 OpenClaw</span>}
-            desc="停止 Gateway 并删除所有已安装的文件"
-            loading={actionLoading === "uninstall"}
-            onClick={async () => {
-              if (!confirm("确定要卸载 OpenClaw 吗？\n\n将停止 Gateway 并删除安装目录。\n（~/.openclaw/ 配置文件会保留）")) return;
-              setActionLoading("uninstall");
-              try {
-                await invoke("kill_gateway_process", { installDir: manifest.install_dir, port });
-                await invoke("uninstall", { installDir: manifest.install_dir });
-                alert("卸载完成！程序将关闭。");
-                if (isTauri) {
-                  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-                  await getCurrentWindow().close();
-                }
-              } catch (e) {
-                alert(`卸载失败: ${e}`);
-              } finally {
-                setActionLoading(null);
-              }
-            }}
-          />
-        </div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <ActionGroup title="常用操作" hint="最常用的启动与配置入口" highlight={configMissing}>
+              <ActionRow
+                icon={<FileEdit size={16} className="text-brand-400" />}
+                label="综合配置（API / skills / hooks）"
+                desc={configMissing ? "建议先完成：API / skills / 飞书配置" : "随时运行 openclaw onboard 调整 API Key、skills 和启动方式"}
+                onClick={() => setShowConfigPanel(true)}
+              />
+              <ActionRow
+                icon={<FileEdit size={16} />}
+                label="修改 API Key"
+                desc={manifest.api_key_configured ? "编辑 ~/.openclaw/openclaw.json 配置文件" : "打开配置文件设置 API Key"}
+                onClick={async () => {
+                  try {
+                    await invoke("open_config_file");
+                  } catch (e) {
+                    console.error("打开配置文件失败:", e);
+                  }
+                }}
+              />
+              <ActionRow
+                icon={<FolderOpen size={16} />}
+                label="安装目录"
+                desc={manifest.install_dir}
+                onClick={async () => {
+                  try {
+                    await invoke("open_folder", { path: manifest.install_dir });
+                  } catch (e) {
+                    console.error("打开目录失败:", e);
+                  }
+                }}
+              />
+            </ActionGroup>
+
+            <ActionGroup title="维护诊断" hint="排障、日志与健康检查">
+              <ActionRow
+                icon={<Stethoscope size={16} className="text-yellow-400" />}
+                label="诊断与修复"
+                desc="运行 openclaw doctor 检测并修复问题"
+                loading={actionLoading === "diagnose"}
+                onClick={runDiagnose}
+              />
+              <ActionRow
+                icon={<FolderOpen size={16} className="text-blue-400" />}
+                label="查看 installer 日志"
+                desc="%USERPROFILE%\\.openclaw\\installer-logs"
+                onClick={openLogDirectory}
+              />
+              <ActionRow
+                icon={<FolderOpen size={16} className="text-blue-400" />}
+                label="查看运行日志"
+                desc="<install_dir>\\logs"
+                onClick={openRuntimeLogDirectory}
+              />
+            </ActionGroup>
+
+            <ActionGroup title="危险操作" hint="执行前请再次确认">
+              <ActionRow
+                danger
+                icon={<Trash2 size={16} className="text-red-400" />}
+                label={<span className="text-red-400">卸载 OpenClaw</span>}
+                desc="停止 Gateway 并删除所有已安装的文件"
+                loading={actionLoading === "uninstall"}
+                onClick={async () => {
+                  if (!confirm("确定要卸载 OpenClaw 吗？\n\n将停止 Gateway 并删除安装目录。\n（~/.openclaw/ 配置文件会保留）")) return;
+                  setActionLoading("uninstall");
+                  try {
+                    await invoke("kill_gateway_process", { installDir: manifest.install_dir, port });
+                    await invoke("uninstall", { installDir: manifest.install_dir });
+                    alert("卸载完成！程序将关闭。");
+                    if (isTauri) {
+                      const { getCurrentWindow } = await import("@tauri-apps/api/window");
+                      await getCurrentWindow().close();
+                    }
+                  } catch (e) {
+                    alert(`卸载失败: ${e}`);
+                  } finally {
+                    setActionLoading(null);
+                  }
+                }}
+              />
+            </ActionGroup>
+          </div>
 
         {/* 版本信息 */}
-        <p className="text-center text-xs text-gray-700">
+          <p className="text-center text-xs text-slate-700">
           OpenClaw Manager v{manifest.version} · 安装目录: {manifest.install_dir}
         </p>
+        </div>
       </div>
+
+      {showConfigPanel && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-5xl h-[88vh] bg-slate-950 border border-slate-800 rounded-2xl p-5 flex flex-col overflow-hidden shadow-2xl">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-base font-semibold text-slate-100">综合配置</h3>
+              <button
+                onClick={() => setShowConfigPanel(false)}
+                className="w-8 h-8 rounded-lg bg-slate-900 border border-slate-700 text-slate-500 hover:text-slate-300 hover:border-slate-600 transition-colors flex items-center justify-center"
+              >
+                <X size={16} />
+              </button>
+            </div>
+            <UnifiedConfigPanel
+              cliCaps={cliCaps}
+              mode="manager"
+              onCancel={() => setShowConfigPanel(false)}
+              onDone={async (summary) => {
+                await refreshManifestState();
+                setShowConfigPanel(false);
+                if (summary?.hint) {
+                  setLastErrorHint(summary.hint);
+                }
+                if (summary?.message) {
+                  setLastError(null);
+                }
+              }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -499,27 +682,67 @@ function ActionRow({
   desc,
   loading,
   onClick,
+  danger,
 }: {
   icon: React.ReactNode;
   label: React.ReactNode;
   desc: string;
   loading?: boolean;
   onClick: () => void;
+  danger?: boolean;
 }) {
   return (
     <button
       onClick={onClick}
       disabled={loading}
-      className="w-full flex items-center gap-3 px-4 py-3.5 hover:bg-gray-800 transition-colors text-left disabled:opacity-50"
+      className={`w-full flex items-center gap-3 px-4 py-4 transition-colors text-left disabled:opacity-50 rounded-xl
+        ${danger ? "hover:bg-red-900/20" : "hover:bg-slate-800/70"}
+      `}
     >
-      <span className="text-gray-400 flex-shrink-0">
+      <span className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 flex items-center justify-center flex-shrink-0">
         {loading ? <Loader size={16} className="animate-spin" /> : icon}
       </span>
       <div className="flex-1 min-w-0">
-        <div className="text-sm text-gray-200">{label}</div>
-        <div className="text-xs text-gray-500 mt-0.5 truncate">{desc}</div>
+        <div className="text-sm text-slate-100">{label}</div>
+        <div className="text-xs text-slate-500 mt-1 truncate">{desc}</div>
       </div>
-      <ChevronRight size={14} className="text-gray-600 flex-shrink-0" />
+      <ChevronRight size={14} className="text-slate-600 flex-shrink-0" />
     </button>
+  );
+}
+
+function ActionGroup({
+  title,
+  hint,
+  highlight = false,
+  children,
+}: {
+  title: string;
+  hint: string;
+  highlight?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={`rounded-2xl overflow-hidden transition-all duration-200
+        ${highlight
+          ? "bg-brand-500/5 border border-brand-400/40 shadow-[0_0_0_1px_rgba(16,185,129,0.2)]"
+          : "bg-slate-900/80 border border-slate-800 hover:border-slate-700"
+        }
+      `}
+    >
+      <div className={`px-4 py-3 border-b ${highlight ? "border-brand-400/30" : "border-slate-800"}`}>
+        <p className="text-sm font-medium text-slate-100 flex items-center gap-2">
+          {title}
+          {highlight && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full border border-brand-400/50 text-brand-300 bg-brand-500/10">
+              推荐
+            </span>
+          )}
+        </p>
+        <p className="text-xs text-slate-500 mt-1">{hint}</p>
+      </div>
+      <div className="divide-y divide-slate-800">{children}</div>
+    </div>
   );
 }

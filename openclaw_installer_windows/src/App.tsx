@@ -3,11 +3,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-import type { AppManifest, WizardStep, LogEntry, GatewayStatus, CheckEnvironmentResult, CliCapabilities, ApiKeyDraft, OnboardingSummary } from "./types";
+import type { AppManifest, WizardStep, LogEntry, GatewayStatus, CheckEnvironmentResult, CliCapabilities, OnboardingSummary } from "./types";
 import type { EnvEstimate } from "./utils/estimate";
 import SysCheck from "./pages/SysCheck";
 import Installing from "./pages/Installing";
-import ApiKeySetup from "./pages/ApiKeySetup";
 import OnboardingSetup from "./pages/OnboardingSetup";
 import Launching from "./pages/Launching";
 import Manager from "./pages/Manager";
@@ -23,12 +22,12 @@ export default function App() {
   const [view, setView] = useState<AppView>("loading");
   const [wizardStep, setWizardStep] = useState<WizardStep>("syscheck");
   const [manifest, setManifest] = useState<AppManifest | null>(null);
+  const [managerAutoOpenConfig, setManagerAutoOpenConfig] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>("checking");
   const [cliCaps, setCliCaps] = useState<CliCapabilities | null>(null);
   const [envEstimate, setEnvEstimate] = useState<EnvEstimate | null>(null);
   const [loadingSec, setLoadingSec] = useState(0);
-  const [apiDraft, setApiDraft] = useState<ApiKeyDraft | null>(null);
   const [onboardingSummary, setOnboardingSummary] = useState<OnboardingSummary | null>(null);
 
   const addLog = (level: LogEntry["level"], message: string) => {
@@ -73,6 +72,7 @@ export default function App() {
         });
         if (env.manifest_complete && env.manifest) {
           setManifest(env.manifest);
+          setManagerAutoOpenConfig(false);
           setView("manager");
           return;
         }
@@ -90,8 +90,9 @@ export default function App() {
             last_error: null,
           };
           setManifest(m);
-          setWizardStep("launching");
-          setView("wizard");
+          setManagerAutoOpenConfig(false);
+          // 已安装并已存在配置，直接进入 Manager（可随时修改配置并启动 Chat）
+          setView("manager");
           return;
         }
         if (env.openclaw_installed && !env.config_exists) {
@@ -108,12 +109,14 @@ export default function App() {
             last_error: null,
           };
           setManifest(m);
-          setWizardStep("apikey");
-          setView("wizard");
+          // 已安装但未配置：直接进入 Manager，并自动弹出综合配置
+          setManagerAutoOpenConfig(true);
+          setView("manager");
           return;
         }
         const m = env.manifest ?? null;
         setManifest(m);
+        setManagerAutoOpenConfig(false);
         setView("wizard");
         if (m && m.phase === "installing") {
           setWizardStep("installing");
@@ -149,16 +152,6 @@ export default function App() {
   };
 
   const handleInstallDone = () => {
-    setWizardStep("apikey");
-  };
-
-  const handleApiKeyDone = (draft: ApiKeyDraft) => {
-    setApiDraft(draft);
-    setManifest((prev) =>
-      prev
-        ? { ...prev, api_provider: draft.provider, api_key_configured: draft.keyConfigured }
-        : prev
-    );
     setWizardStep("onboarding");
   };
 
@@ -169,12 +162,13 @@ export default function App() {
 
   const handleLaunchDone = (updatedManifest: AppManifest) => {
     setManifest(updatedManifest);
+    setManagerAutoOpenConfig(false);
     setView("manager");
     setGatewayStatus("running");
   };
 
-  const WIZARD_STEPS: WizardStep[] = ["syscheck", "installing", "apikey", "onboarding", "launching"];
-  const STEP_LABELS = ["系统预检", "安装 OpenClaw", "配置 AI 模型", "可选能力配置", "启动 Gateway"];
+  const WIZARD_STEPS: WizardStep[] = ["syscheck", "installing", "onboarding", "launching"];
+  const STEP_LABELS = ["系统预检", "安装 OpenClaw", "综合配置", "启动 Gateway"];
 
   if (view === "loading") {
     return (
@@ -206,6 +200,7 @@ export default function App() {
         gatewayStatus={gatewayStatus}
         onStatusChange={setGatewayStatus}
         onManifestChange={setManifest}
+        autoOpenConfig={managerAutoOpenConfig}
       />
     );
   }
@@ -233,14 +228,8 @@ export default function App() {
             onDone={handleInstallDone}
           />
         )}
-        {wizardStep === "apikey" && (
-          <ApiKeySetup
-            onDone={handleApiKeyDone}
-          />
-        )}
         {wizardStep === "onboarding" && (
           <OnboardingSetup
-            draft={apiDraft}
             cliCaps={cliCaps}
             onDone={handleOnboardingDone}
           />

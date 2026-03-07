@@ -173,10 +173,18 @@ pub struct SavedApiConfig {
     pub model: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SavedFeishuConfig {
+    pub app_id: String,
+    pub app_secret: String,
+}
+
 #[derive(Debug, Clone)]
 struct OnboardingPrefs {
     install_daemon: bool,
     channel: Option<String>,
+    feishu_app_id: Option<String>,
+    feishu_app_secret: Option<String>,
     install_skills: bool,
     install_hooks: bool,
     launch_mode: Option<String>,
@@ -917,9 +925,128 @@ fn read_saved_api_config() -> Option<SavedApiConfig> {
     })
 }
 
+fn read_saved_feishu_config() -> Option<SavedFeishuConfig> {
+    let config_dir = openclaw_config_dir().ok()?;
+    let config_path = config_dir.join("openclaw.json");
+    let raw = std::fs::read_to_string(config_path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    let feishu = json
+        .get("channels")
+        .and_then(|v| v.get("feishu"))
+        .and_then(|v| v.as_object())?;
+    let app_id = feishu
+        .get("appId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let app_secret = feishu
+        .get("appSecret")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    if app_id.trim().is_empty() || app_secret.trim().is_empty() {
+        return None;
+    }
+    Some(SavedFeishuConfig { app_id, app_secret })
+}
+
+fn save_feishu_config(app_id: &str, app_secret: &str) -> Result<PathBuf, String> {
+    let id = app_id.trim();
+    let secret = app_secret.trim();
+    if id.is_empty() || secret.is_empty() {
+        return Err("飞书 appId / appSecret 不能为空".into());
+    }
+    let config_dir = openclaw_config_dir()?;
+    let config_path = config_dir.join("openclaw.json");
+    let mut config = if config_path.exists() {
+        let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+        serde_json::from_str(&existing).unwrap_or_else(|_| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+    let patch = serde_json::json!({
+        "channels": {
+            "feishu": {
+                "appId": id,
+                "appSecret": secret
+            }
+        }
+    });
+    merge_json(&mut config, &patch);
+    let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    std::fs::write(&config_path, json).map_err(|e| format!("写入飞书配置失败: {e}"))?;
+    Ok(config_path)
+}
+
 #[tauri::command]
 pub fn get_saved_api_config() -> Option<SavedApiConfig> {
     read_saved_api_config()
+}
+
+#[tauri::command]
+pub fn get_saved_feishu_config() -> Option<SavedFeishuConfig> {
+    read_saved_feishu_config()
+}
+
+fn ps_single_quote(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+#[tauri::command]
+pub async fn validate_feishu_connectivity(app_id: String, app_secret: String) -> Result<ValidateResult, String> {
+    let id = app_id.trim().to_string();
+    let secret = app_secret.trim().to_string();
+    if id.is_empty() || secret.is_empty() {
+        return Ok(ValidateResult {
+            status: "error".into(),
+            message: "请先填写飞书 appId 与 appSecret".into(),
+        });
+    }
+
+    tokio::task::spawn_blocking(move || {
+        let id_ps = ps_single_quote(&id);
+        let secret_ps = ps_single_quote(&secret);
+        let script = format!(
+            "$body = @{{ app_id = '{id_ps}'; app_secret = '{secret_ps}' }} | ConvertTo-Json -Compress; \
+             try {{ $resp = Invoke-RestMethod -Method Post -Uri 'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal' -Body $body -ContentType 'application/json' -TimeoutSec 12; $resp | ConvertTo-Json -Compress }} \
+             catch {{ '{{\"code\":-1,\"msg\":\"' + ($_.Exception.Message -replace '\"','\\\"') + '\"}}' }}"
+        );
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", &script])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        no_window!(cmd);
+        let output = cmd.output().map_err(|e| format!("执行飞书连通性校验失败: {e}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if stdout.is_empty() {
+            return Ok(ValidateResult {
+                status: "error".into(),
+                message: "飞书连通性校验失败：未收到返回内容".into(),
+            });
+        }
+        let parsed: serde_json::Value = serde_json::from_str(&stdout).unwrap_or_else(|_| serde_json::json!({
+            "code": -1,
+            "msg": stdout
+        }));
+        let code = parsed.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
+        if code == 0 {
+            return Ok(ValidateResult {
+                status: "ok".into(),
+                message: "飞书连通性校验通过".into(),
+            });
+        }
+        let msg = parsed
+            .get("msg")
+            .and_then(|v| v.as_str())
+            .unwrap_or("未知错误")
+            .to_string();
+        Ok(ValidateResult {
+            status: "error".into(),
+            message: format!("飞书连通性校验失败：{msg}"),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn normalize_auth_provider(provider: &str) -> &'static str {
@@ -1566,6 +1693,8 @@ pub async fn run_onboarding(api_key: String, provider: String) -> CommandResult 
         OnboardingPrefs {
             install_daemon: true,
             channel: None,
+            feishu_app_id: None,
+            feishu_app_secret: None,
             install_skills: false,
             install_hooks: false,
             launch_mode: Some("web".into()),
@@ -1584,6 +1713,8 @@ pub async fn run_onboarding_with_model(api_key: String, provider: String, base_u
         OnboardingPrefs {
             install_daemon: true,
             channel: None,
+            feishu_app_id: None,
+            feishu_app_secret: None,
             install_skills: false,
             install_hooks: false,
             launch_mode: Some("web".into()),
@@ -1600,6 +1731,8 @@ pub async fn run_onboarding_guided(
     model: Option<String>,
     install_daemon: bool,
     channel: Option<String>,
+    feishu_app_id: Option<String>,
+    feishu_app_secret: Option<String>,
     install_skills: bool,
     install_hooks: bool,
     launch_mode: Option<String>,
@@ -1612,6 +1745,8 @@ pub async fn run_onboarding_guided(
         OnboardingPrefs {
             install_daemon,
             channel,
+            feishu_app_id,
+            feishu_app_secret,
             install_skills,
             install_hooks,
             launch_mode,
@@ -1634,6 +1769,19 @@ async fn run_onboarding_impl(
     let prefs_arg = prefs.clone();
     
     tokio::task::spawn_blocking(move || {
+        let feishu_id = prefs_arg
+            .feishu_app_id
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+        let feishu_secret = prefs_arg
+            .feishu_app_secret
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("")
+            .to_string();
+
         // 检测是否支持非交互 flags
         let caps = {
             refresh_path();
@@ -1722,6 +1870,20 @@ async fn run_onboarding_impl(
                 args.push(channel.to_string());
             } else {
                 skipped_items.push("channel".into());
+            }
+
+            if channel.eq_ignore_ascii_case("feishu")
+                && !feishu_id.is_empty()
+                && !feishu_secret.is_empty()
+            {
+                if has_flag("--feishu-app-id") && has_flag("--feishu-app-secret") {
+                    args.push("--feishu-app-id".into());
+                    args.push(feishu_id.clone());
+                    args.push("--feishu-app-secret".into());
+                    args.push(feishu_secret.clone());
+                } else {
+                    skipped_items.push("feishu_credentials".into());
+                }
             }
         }
 
@@ -1848,6 +2010,25 @@ async fn run_onboarding_impl(
                     format!("onboard 完成，但自动写入 Agent 认证失败：{e}")
                 } else {
                     format!("{prev}；另外自动写入 Agent 认证失败：{e}")
+                });
+            }
+        }
+        if result.success
+            && prefs_arg
+                .channel
+                .as_deref()
+                .map(str::trim)
+                .map(|s| s.eq_ignore_ascii_case("feishu"))
+                .unwrap_or(false)
+            && !feishu_id.is_empty()
+            && !feishu_secret.is_empty()
+        {
+            if let Err(e) = save_feishu_config(&feishu_id, &feishu_secret) {
+                let prev = result.hint.unwrap_or_default();
+                result.hint = Some(if prev.is_empty() {
+                    format!("onboard 完成，但写入飞书配置失败：{e}")
+                } else {
+                    format!("{prev}；另外写入飞书配置失败：{e}")
                 });
             }
         }

@@ -7,7 +7,6 @@ export type AppPhase =
 export type WizardStep =
   | "syscheck"
   | "installing"
-  | "apikey"
   | "onboarding"
   | "launching";
 
@@ -124,6 +123,11 @@ export interface SavedApiConfig {
   api_key: string;
   base_url: string;
   model: string;
+}
+
+export interface SavedFeishuConfig {
+  app_id: string;
+  app_secret: string;
 }
 
 export interface OnboardingSummary {

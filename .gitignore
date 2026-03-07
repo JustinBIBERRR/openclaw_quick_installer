@@ -1,6 +1,12 @@
 # 嵌套 git 仓库
 enable_openclaw_feishu_lark/
 
+# Cursor IDE
+.cursor/
+
 # 临时文件
 *.log
 commit_msg.txt
+
+# Cursor IDE
+.cursor/

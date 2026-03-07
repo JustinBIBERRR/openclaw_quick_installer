@@ -59,14 +59,14 @@ export default function TitleBar({ title }: Props) {
   }
 
   return (
-    <div className="h-10 flex items-center bg-gray-950 border-b border-gray-800 flex-shrink-0 select-none">
+    <div className="h-10 flex items-center bg-slate-950/95 border-b border-slate-800 flex-shrink-0 select-none">
       {/* ── 左侧拖拽区：图标 + 标题（仅此区域可拖动窗口）── */}
       <div
         data-tauri-drag-region
         className="flex-1 flex items-center gap-2 h-full px-4 cursor-default overflow-hidden"
       >
-        <span className="text-brand-400 font-semibold text-sm pointer-events-none">🦞</span>
-        <span className="text-gray-300 text-sm font-medium truncate pointer-events-none">{title}</span>
+        <span className="text-brand-300 font-semibold text-sm pointer-events-none">🦞</span>
+        <span className="text-slate-300 text-sm font-medium truncate pointer-events-none">{title}</span>
       </div>
 
       {/* ── 右侧按钮区：明确排除在拖拽区之外 ── */}
@@ -76,8 +76,8 @@ export default function TitleBar({ title }: Props) {
           onPointerDown={(e) => e.stopPropagation()}
           onClick={handleMinimize}
           title="最小化"
-          className="w-11 h-full flex items-center justify-center text-gray-400
-            hover:bg-gray-700 hover:text-gray-100 transition-colors duration-100
+          className="w-11 h-full flex items-center justify-center text-slate-400
+            hover:bg-slate-800 hover:text-slate-100 transition-colors duration-100
             focus:outline-none"
         >
           <Minus size={14} strokeWidth={1.8} />
@@ -88,8 +88,8 @@ export default function TitleBar({ title }: Props) {
           onPointerDown={(e) => e.stopPropagation()}
           onClick={handleToggleMaximize}
           title={maximized ? "还原窗口" : "最大化"}
-          className="w-11 h-full flex items-center justify-center text-gray-400
-            hover:bg-gray-700 hover:text-gray-100 transition-colors duration-100
+          className="w-11 h-full flex items-center justify-center text-slate-400
+            hover:bg-slate-800 hover:text-slate-100 transition-colors duration-100
             focus:outline-none"
         >
           {maximized
@@ -103,8 +103,8 @@ export default function TitleBar({ title }: Props) {
           onPointerDown={(e) => e.stopPropagation()}
           onClick={handleClose}
           title="关闭"
-          className="w-11 h-full flex items-center justify-center text-gray-400
-            hover:bg-red-600 hover:text-white transition-colors duration-100
+          className="w-11 h-full flex items-center justify-center text-slate-400
+            hover:bg-rose-600 hover:text-white transition-colors duration-100
             focus:outline-none"
         >
           <X size={14} strokeWidth={1.8} />
