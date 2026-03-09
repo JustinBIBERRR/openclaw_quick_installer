@@ -1,261 +1,111 @@
 # OpenClaw 一键安装器
 
-OpenClaw 一键安装器是一个基于 Tauri 的桌面应用程序，用于简化 OpenClaw CLI 工具的安装、配置和管理流程。
+OpenClaw 一键安装器是一款桌面应用，帮你快速完成 OpenClaw CLI 的安装、配置和日常管理。
 
-## 项目概述
+![OpenClaw 一键安装器](README_assets/logo.png)
 
-本安装器提供了完整的 OpenClaw 环境搭建解决方案，包括：
-- 系统环境检测
-- OpenClaw CLI 自动安装
-- API 密钥配置
-- 飞书机器人配置
-- Gateway 服务管理
+## 能做什么
 
-## 应用流程架构
+- **系统环境检测**：自动检查是否满足安装条件（权限、内存等）
+- **一键安装 OpenClaw CLI**：自动安装 Node.js、OpenClaw 及依赖
+- **API 与飞书配置**：配置 API 密钥、模型，以及飞书机器人（可选）
+- **Gateway 服务管理**：启动/停止 Gateway，查看状态与日志
 
-### 主要视图模式
+## 首次使用流程
 
-应用包含三个主要视图：
-
-1. **Loading（加载中）**: 应用启动时的初始化状态
-2. **Wizard（安装向导）**: 首次安装或配置不完整时的引导流程
-3. **Manager（管理界面）**: 安装完成后的日常管理界面
-
-### 流程决策逻辑
-
-#### 首次进入流程
-当用户首次启动应用时，系统会按照以下固定流程引导用户：
+安装器首次启动会按下面顺序引导你完成环境搭建：
 
 ```
-步骤1: 系统预检 (SysCheck)
-    ↓
-步骤2: 安装 OpenClaw (Installing)  
-    ↓
-步骤3: 综合配置 (OnboardingSetup)
-    ↓
-步骤4: 启动 Gateway (Launching)
-    ↓
-管理界面 (Manager)
+环境预检 → 安装 OpenClaw → 配置参数 → 启动 Gateway → Chat 页面
 ```
 
-#### 非首次进入流程
-对于已有部分配置的用户，系统会智能检测配置缺失部分，直接跳转到对应步骤：
+## 流程指引
 
-- **已完成安装**: 如果检测到 `manifest.phase === "complete"`，直接进入 Manager 界面
-- **安装中断**: 如果检测到 `manifest.phase === "installing"`，跳转到步骤2继续安装
-- **配置就绪**: 如果检测到已有可用的 OpenClaw 配置，直接进入 Manager 界面
-- **其他情况**: 从步骤1开始重新检测
+### 第一步：环境预检
 
-## 详细步骤说明
+进行安装前的环境检查，确保本机满足运行条件：
 
-### 步骤1: 系统预检 (SysCheck)
+- **管理员权限检查**：安装与配置需要管理员权限，不足时可按提示一键提权
+- **内存检查**：检查系统内存是否充足（推荐 ≥8GB）
+- **网络联通检查**：验证网络可用，便于后续下载依赖与访问 API
 
-**目的**: 验证系统环境是否满足安装要求
+![环境预检](README_assets/env_check.png)
 
-**检测项目**:
-- **OpenClaw 本地配置**: 检查是否已安装 OpenClaw 且配置可用
-  - 如果检测到就绪配置，可直接跳转到 Manager
-- **管理员权限**: 验证是否具有管理员权限
-  - 权限不足时提供一键提权功能
-- **内存状态**: 检查系统内存是否充足（推荐 ≥8GB）
+### 第二步：安装 OpenClaw
 
-**完成条件**: 所有检测项通过，用户选择安装目录
+自动下载并安装 OpenClaw 运行环境与 CLI,安装过程会唤起powershell预览实时进度：
+不同用户环节耗时不一,预计5min以内完成安装
+- 若未检测到 Node.js，会先安装 Node.js 运行环境（2-3min）
+- 安装 OpenClaw CLI 及必要依赖（1-2min）
+- 界面会实时显示安装进度与日志
 
-**跳转逻辑**:
-- 检测到就绪配置 → 直接进入 Manager
-- 检测通过 → 进入步骤2
-- 检测失败 → 提供修复建议或手动跳过
+![安装 OpenClaw](README_assets/openclaw_install.png)
+![安装 OpenClaw 成功](README_assets/openclaw_install_success.png)
 
-### 步骤2: 安装 OpenClaw (Installing)
+### 第三步：配置参数
 
-**目的**: 自动下载并安装 OpenClaw CLI 及其依赖
+在此步骤完成 OpenClaw 的核心配置：
 
-**安装内容**:
-- Node.js 运行环境（如未安装）
-- OpenClaw CLI 工具
-- 必要的系统依赖
+- **飞书信息**：配置飞书机器人（App ID、App Secret 等）
+- **模型信息**：选择 API 提供商（Anthropic、OpenAI、DeepSeek 或自定义），填写 API 密钥并验证，选择模型
+- **Skills（可以跳过）**：选择或配置需要使用的技能
+- **Hooks（可以跳过）**：选择或配置需要使用的技能
 
-**进度显示**: 实时显示安装日志和进度
+![配置参数](README_assets/config.png)
 
-**完成条件**: OpenClaw CLI 成功安装并可执行
+### 第四步：等待 Gateway 启动
 
-### 步骤3: 综合配置 (OnboardingSetup)
+应用当前配置并启动 OpenClaw Gateway 服务：
 
-**目的**: 配置 OpenClaw 的核心参数
+- 自动应用已保存的配置
+- 启动 Gateway 并检测端口占用
+- 校验服务是否正常响应
 
-**配置项目**:
-- **API 提供商配置**:
-  - 支持 Anthropic、OpenAI、DeepSeek、自定义提供商
-  - API 密钥验证
-  - 模型选择
-- **飞书机器人配置**（可选）:
-  - App ID 和 App Secret
-  - 连接测试
+### 第五步：Chat 启动页面
 
-**配置模式**:
-- **向导模式**: 首次配置时的逐步引导
-- **管理模式**: 后续修改配置时的快速编辑
+Gateway 启动成功后，可进入 Chat 页面开始使用：
 
-**完成条件**: 至少完成 API 配置或选择跳过
+- 在 Chat 页面与 OpenClaw 对话、调用已配置的模型与技能
+- 管理界面中也可随时查看 Gateway 状态、修改配置或查看日志
 
-### 步骤4: 启动 Gateway (Launching)
+![Chat 页面](README_assets/chat_page.png)
 
-**目的**: 启动 OpenClaw Gateway 服务并验证运行状态
+网关会自动启动，会出现新的powershell弹窗，保留该poewershell弹窗开启，即可确保网关gateway运行
+![成功启动网关](README_assets/gateway_success.png)
 
-**启动流程**:
-1. 应用配置到 OpenClaw
-2. 启动 Gateway 服务
-3. 验证服务可用性
-4. 检测端口占用和服务状态
+### 第六步：使用OpenClaw页面
 
-**完成条件**: Gateway 服务成功启动并响应
+进入 Chat 页面使用OpenClaw：
 
-## 配置检测机制
+- 可点击下方new开启新的对话
+![对话](README_assets/page.png)
 
-### 智能路由逻辑
 
-应用启动时会执行以下检测序列：
+## 日常使用
 
-```typescript
-// 1. 读取本地 manifest 状态
-const manifest = await invoke<AppManifest | null>("get_app_state");
-
-// 2. 根据 manifest 状态决定路由
-if (manifest && manifest.phase === "complete") {
-    // 已完成安装，进入管理界面
-    setView("manager");
-} else if (manifest && manifest.phase === "installing") {
-    // 安装中断，继续安装流程
-    setView("wizard");
-    setWizardStep("installing");
-} else {
-    // 首次安装或配置不完整，从系统检测开始
-    setView("wizard");
-    setWizardStep("syscheck");
-}
-```
-
-### CLI 能力探测
-
-系统会异步检测 OpenClaw CLI 的功能支持情况：
-
-```typescript
-interface CliCapabilities {
-    version: string | null;           // CLI 版本
-    has_onboarding: boolean;         // 是否支持 onboarding 命令
-    has_doctor: boolean;             // 是否支持 doctor 诊断
-    has_gateway: boolean;            // 是否支持 gateway 服务
-    has_dashboard: boolean;          // 是否支持 dashboard
-    onboarding_flags: string[];      // onboarding 支持的参数
-    doctor_flags: string[];          // doctor 支持的参数  
-    gateway_flags: string[];         // gateway 支持的参数
-}
-```
-
-## 状态管理
-
-### AppManifest 状态
-
-```typescript
-interface AppManifest {
-    version: string;                 // 安装器版本
-    phase: AppPhase;                // 当前阶段状态
-    install_dir: string;            // 安装目录
-    gateway_port: number;           // Gateway 端口
-    gateway_pid: number | null;     // Gateway 进程ID
-    api_provider: string;           // API 提供商
-    api_key_configured: boolean;    // API 密钥是否已配置
-    api_key_verified: boolean;      // API 密钥是否已验证
-    steps_done: string[];           // 已完成的步骤
-    last_error: string | null;      // 最后的错误信息
-}
-```
-
-### 阶段状态定义
-
-```typescript
-type AppPhase = 
-    | "fresh"        // 全新安装
-    | "installing"   // 安装中
-    | "complete"     // 安装完成
-    | "failed";      // 安装失败
-```
-
-## 错误处理和恢复
-
-### 超时处理
-- 启动检测超时（5秒）：允许用户手动进入向导
-- CLI 能力探测超时（15秒）：不阻塞主流程，后台继续尝试
-
-### 错误恢复
-- 安装中断：保存进度状态，重启后可继续
-- 配置丢失：重新检测并引导用户补充
-- 服务异常：提供诊断工具和修复建议
-
-## 开发和构建
-
-### 技术栈
-- **前端**: React + TypeScript + Tailwind CSS
-- **后端**: Rust + Tauri
-- **构建**: Vite + Tauri CLI
-
-### 项目结构
-```
-src/
-├── components/          # 可复用组件
-│   ├── TitleBar.tsx    # 标题栏
-│   ├── StepBar.tsx     # 步骤指示器
-│   └── UnifiedConfigPanel.tsx  # 统一配置面板
-├── pages/              # 页面组件
-│   ├── SysCheck.tsx    # 系统检测页面
-│   ├── Installing.tsx  # 安装页面
-│   ├── OnboardingSetup.tsx  # 配置页面
-│   ├── Launching.tsx   # 启动页面
-│   └── Manager.tsx     # 管理页面
-├── utils/              # 工具函数
-└── types.ts            # 类型定义
-```
-
-### 构建命令
-```bash
-# 开发模式
-npm run tauri dev
-
-# 构建发布版本
-npm run tauri build
-```
-
-## 用户体验设计
-
-### 设计原则
-1. **渐进式引导**: 复杂配置分步骤完成，降低用户认知负担
-2. **智能检测**: 自动识别已有配置，避免重复操作
-3. **容错设计**: 提供跳过选项和错误恢复机制
-4. **实时反馈**: 安装和配置过程提供详细进度和日志
-
-### 交互特性
-- **一键提权**: 自动请求管理员权限
-- **配置验证**: 实时验证 API 密钥有效性
-- **服务监控**: 实时显示 Gateway 服务状态
-- **日志查看**: 提供详细的操作日志和错误信息
+- 若之前已完成安装与配置，再次打开安装器会直接进入**第五步 Chat 启动页面**。
+- 若安装曾中断或配置不完整，安装器会自动识别并从中断步骤或缺失配置处继续。
 
 ## 故障排除
 
-### 常见问题
-1. **权限不足**: 使用一键提权功能或手动以管理员身份运行
-2. **网络问题**: 检查防火墙设置和网络连接
-3. **端口冲突**: Gateway 默认使用 18789 端口，如有冲突会自动寻找可用端口
-4. **配置丢失**: 重新运行配置向导
+| 问题 | 建议 |
+|------|------|
+| 权限不足 | 使用界面中的「一键提权」，或以管理员身份运行程序 |
+| 网络异常 | 检查防火墙与网络连接 |
+| 端口冲突 | Gateway 默认端口 18789，若有冲突会自动尝试其他端口 |
+| 配置丢失 | 重新打开安装器，按向导补充或重新配置 |
 
-### 诊断工具
-- **Doctor 命令**: 自动诊断 OpenClaw 环境问题
-- **日志查看**: 查看详细的安装和运行日志
-- **状态检测**: 实时监控各组件运行状态
+安装器内提供**诊断工具**与**日志查看**，便于排查 OpenClaw 环境与运行问题。
 
-## 版本历史
+## 版本与许可
 
-详见 [CHANGELOG.md](./CHANGELOG.md)
+- 版本更新说明见 [CHANGELOG.md](./CHANGELOG.md)
+- 许可信息见项目中的 LICENSE 文件
 
-## 许可证
+## 规划
+1、样式优化
+2、体验交互优化（loading等待、二次打开检测）
+3、skills和hooks库拓展，模型选择拓展。可搜索search
+---
 
-本项目遵循相应的开源许可证，具体信息请查看 LICENSE 文件。
+*开发者文档（技术栈、构建、状态与路由逻辑等）见 [README_DEVELOPER.md](./README_DEVELOPER.md)。*
