@@ -16,32 +16,32 @@ $successSignalCount = @($ev.successSignals).Count
 $failureSignalCount = @($ev.failureSignals).Count
 
 if (-not $ev.finished) {
-    $errors += "安装器运行超时或异常退出"
+    $errors += "installer timed out or exited unexpectedly"
 }
 if (-not $ev.installLogCount -or [int]$ev.installLogCount -lt 1) {
-    $errors += "未采集到安装日志"
+    $errors += "no install logs were captured"
 }
 if (-not (Test-Path $ev.stdoutFile)) {
-    $errors += "stdout 文件不存在"
+    $errors += "stdout file is missing"
 }
 if (-not (Test-Path $ev.stderrFile)) {
-    $errors += "stderr 文件不存在"
+    $errors += "stderr file is missing"
 }
 if ($ev.screenshotBefore -and -not (Test-Path $ev.screenshotBefore)) {
-    $errors += "启动前截图文件不存在"
+    $errors += "before screenshot is missing"
 }
 if ($ev.screenshotAfter -and -not (Test-Path $ev.screenshotAfter)) {
-    $errors += "启动后截图文件不存在"
+    $errors += "after screenshot is missing"
 }
 
 if ($null -ne $expectedPass) {
     if ($expectedPass) {
         if ($successSignalCount -lt 1) {
-            $errors += "预期应成功，但没有采集到成功信号"
+            $errors += "expected success but no success signal was captured"
         }
     } else {
         if ($failureSignalCount -lt 1 -and $successSignalCount -gt 0) {
-            $errors += "预期应失败，但 evidence 未体现明确失败信号"
+            $errors += "expected failure but no explicit failure signal was captured"
         }
     }
 }

@@ -4,12 +4,16 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not (Get-Module -ListAvailable -Name Pester)) {
-    Write-Host "Pester is missing, installing for CurrentUser..." -ForegroundColor Yellow
-    Install-Module Pester -Scope CurrentUser -Force -SkipPublisherCheck
+$minPesterVersion = [Version]"5.4.0"
+$installedPester = Get-Module -ListAvailable -Name Pester |
+    Sort-Object Version -Descending |
+    Select-Object -First 1
+
+if (-not $installedPester -or $installedPester.Version -lt $minPesterVersion) {
+    throw "Pester >= $minPesterVersion is required. Installed: $($installedPester.Version)"
 }
 
-Import-Module Pester -Force
+Import-Module Pester -MinimumVersion $minPesterVersion -Force
 
 if (Get-Command New-PesterConfiguration -ErrorAction SilentlyContinue) {
     $config = New-PesterConfiguration
@@ -17,13 +21,13 @@ if (Get-Command New-PesterConfiguration -ErrorAction SilentlyContinue) {
     $config.Output.Verbosity = "Detailed"
     $config.Should.ErrorAction = "Stop"
     $result = Invoke-Pester -Configuration $config
-    if ($result.FailedCount -gt 0) {
+    if (
+        $result.FailedCount -gt 0 -or
+        $result.FailedBlocksCount -gt 0 -or
+        $result.FailedContainersCount -gt 0
+    ) {
         exit 1
     }
 } else {
-    # 兼容 Windows PowerShell 上的旧版 Pester（v4）
-    $result = Invoke-Pester -Script $Path -PassThru
-    if ($result.FailedCount -gt 0) {
-        exit 1
-    }
+    throw "Pester v5 is required, but New-PesterConfiguration is unavailable."
 }
