@@ -42,6 +42,8 @@ jobs:
 
       - name: Run Rust tests
         run: npm run test:rust
+        env:
+          OPENCLAW_SKIP_TAURI_BUILD: "1"
 
       - name: Run PowerShell/Pester tests
         run: npm run test:ps
