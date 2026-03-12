@@ -61,6 +61,7 @@ $customNpmPrefix = Join-Path $profileDir "CustomNpmPrefix"
 
 $npmCmd = @'
 @echo off
+setlocal EnableDelayedExpansion
 set args=%*
 echo %args% | findstr /I "config get prefix" >nul
 if %errorlevel%==0 (
@@ -83,10 +84,10 @@ if %errorlevel%==0 (
   )
   set target=%APPDATA%\npm
   if "%TEST_PREFIX_MISMATCH%"=="1" set target=%TEST_NPM_PREFIX%
-  if not exist "%target%" mkdir "%target%"
-  > "%target%\openclaw.cmd" echo @echo off
-  >> "%target%\openclaw.cmd" echo if "%%1"=="--version" echo openclaw 9.9.9
-  >> "%target%\openclaw.cmd" echo exit /b 0
+  if not exist "!target!" mkdir "!target!"
+  > "!target!\openclaw.cmd" echo @echo off
+  >> "!target!\openclaw.cmd" echo if "%%1"=="--version" echo openclaw 9.9.9
+  >> "!target!\openclaw.cmd" echo exit /b 0
   echo added 1 package
   exit /b 0
 )
@@ -132,7 +133,14 @@ $psi.RedirectStandardError = $true
 $psi.UseShellExecute = $false
 $psi.CreateNoWindow = $true
 $psi.WorkingDirectory = $repoRoot
-$psi.Environment["PATH"] = "$binDir;$env:PATH"
+$systemPathParts = @(
+    (Join-Path $env:WINDIR "System32"),
+    (Join-Path $env:WINDIR "System32\Wbem"),
+    (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0"),
+    $env:WINDIR
+) | Where-Object { $_ -and (Test-Path $_) }
+$isolatedPath = @($binDir) + $systemPathParts | Select-Object -Unique
+$psi.Environment["PATH"] = ($isolatedPath -join ";")
 $psi.Environment["USERPROFILE"] = $profileDir
 $psi.Environment["APPDATA"] = $appDataDir
 $psi.Environment["LOCALAPPDATA"] = $localAppDataDir

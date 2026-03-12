@@ -65,6 +65,9 @@ function Fail {
 }
 
 function Update-Path {
+    if ($env:OPENCLAW_TEST_MODE -eq "1") {
+        return
+    }
     $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH", "Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("PATH", "User")
 }
