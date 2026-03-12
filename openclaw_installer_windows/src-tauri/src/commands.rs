@@ -1775,10 +1775,10 @@ pub async fn detect_cli_capabilities() -> CliCapabilities {
             let mut flags = vec![];
             for line in text.lines() {
                 let trimmed = line.trim();
-                if (trimmed.starts_with("--") || trimmed.starts_with("-"))
-                    && let Some(flag) = trimmed.split_whitespace().next()
-                {
-                    flags.push(flag.trim_start_matches('-').to_string());
+                if trimmed.starts_with("--") || trimmed.starts_with("-") {
+                    if let Some(flag) = trimmed.split_whitespace().next() {
+                        flags.push(flag.trim_start_matches('-').to_string());
+                    }
                 }
             }
             flags
