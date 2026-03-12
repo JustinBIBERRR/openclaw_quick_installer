@@ -27,6 +27,8 @@ pub fn run() {
             commands::open_url,
             commands::open_config_file,
             commands::open_folder,
+            commands::open_cleanup_powershell,
+            commands::verify_cleanup_state,
             commands::relaunch_as_admin,
             commands::uninstall,
             commands::get_default_install_dir,

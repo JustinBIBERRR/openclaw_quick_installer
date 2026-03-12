@@ -1,0 +1,19 @@
+{
+  "id": "PathWithSpaces",
+  "description": "安装目录包含空格",
+  "simulate": {
+    "nodeMode": "ready",
+    "wingetAvailable": true,
+    "hideGit": true,
+    "hideBash": true,
+    "hideDocker": true,
+    "occupyPort18789": false,
+    "brokenOpenclawConfig": false,
+    "installDirMode": "withSpaces",
+    "networkRestricted": false
+  },
+  "expected": {
+    "installShouldPass": false,
+    "riskLevel": "P0"
+  }
+}

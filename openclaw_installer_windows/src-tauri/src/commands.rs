@@ -124,6 +124,16 @@ pub struct CommandResult {
     pub stderr: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct CleanupVerificationResult {
+    pub user_profile: String,
+    pub openclaw_dir: String,
+    pub npm_openclaw_cmd: String,
+    pub openclaw_dir_exists: bool,
+    pub openclaw_cmd_found_in_path: bool,
+    pub npm_openclaw_cmd_exists: bool,
+}
+
 impl CommandResult {
     fn ok(command: &str, message: &str) -> Self {
         Self {
@@ -214,6 +224,7 @@ struct OnboardingPrefs {
 static INSTALL_PS1:  &str = include_str!("../scripts/install.ps1");
 static GATEWAY_PS1:  &str = include_str!("../scripts/gateway.ps1");
 static SYSCHECK_PS1: &str = include_str!("../scripts/syscheck.ps1");
+static CLEANUP_OPENCLAW_PS1: &str = include_str!("../scripts/cleanup-openclaw.ps1");
 
 /// 将嵌入脚本写入临时目录，返回路径（每次调用覆盖写入，保证最新）
 fn get_embedded_script(name: &str) -> Result<PathBuf, String> {
@@ -221,6 +232,7 @@ fn get_embedded_script(name: &str) -> Result<PathBuf, String> {
         "install.ps1"  => INSTALL_PS1,
         "gateway.ps1"  => GATEWAY_PS1,
         "syscheck.ps1" => SYSCHECK_PS1,
+        "cleanup-openclaw.ps1" => CLEANUP_OPENCLAW_PS1,
         _ => return Err(format!("未知脚本: {}", name)),
     };
     let tmp = std::env::temp_dir().join("openclaw_scripts");
@@ -374,6 +386,7 @@ fn run_install_visible_sync(
     env_pairs: Vec<(String, String)>,
     event_name: &str,
     result_file: PathBuf,
+    progress_file: PathBuf,
 ) -> Result<(), String> {
     let invoke_expr = format!(
         "& ([scriptblock]::Create([System.IO.File]::ReadAllText('{}')))",
@@ -394,6 +407,10 @@ fn run_install_visible_sync(
         "OPENCLAW_RESULT_FILE",
         result_file.to_string_lossy().to_string(),
     );
+    cmd.env(
+        "OPENCLAW_PROGRESS_FILE",
+        progress_file.to_string_lossy().to_string(),
+    );
     cmd.stdin(Stdio::null());
 
     let t_spawn = std::time::Instant::now();
@@ -407,10 +424,10 @@ fn run_install_visible_sync(
             .ok();
     };
 
-    emit_log("info", "正在启动安装窗口（PowerShell）...");
+    emit_log("info", "Starting install window (PowerShell)...");
 
     let mut child = cmd.spawn().map_err(|e| {
-        let msg = format!("启动 PowerShell 失败: {e}");
+        let msg = format!("Failed to start PowerShell: {e}");
         emit_log("error", &msg);
         msg
     })?;
@@ -419,51 +436,68 @@ fn run_install_visible_sync(
     emit_log(
         "info",
         &format!(
-            "安装进程已启动 (PID: {})，请在弹出的 PowerShell 窗口中查看实时进度",
+            "Install process started (PID: {}). Check the PowerShell window for live progress.",
             pid
         ),
     );
 
     let mut heartbeat: u32 = 0;
+    let mut last_progress_snapshot = String::new();
+
     loop {
+        if let Ok(content) = std::fs::read_to_string(&progress_file) {
+            let content = content.trim().to_string();
+            if content != last_progress_snapshot {
+                last_progress_snapshot = content.clone();
+                if let Some(slash) = content.find('/') {
+                    if let Ok(step) = content[..slash].parse::<u32>() {
+                        let rest = &content[slash + 1..];
+                        let total = rest.split_whitespace().next()
+                            .and_then(|s| s.parse::<u32>().ok())
+                            .unwrap_or(4);
+                        let label = rest.splitn(2, ' ').nth(1).unwrap_or("").to_string();
+                        window.emit("install-progress", serde_json::json!({
+                            "step": step, "total": total, "label": label
+                        })).ok();
+                    }
+                }
+            }
+        }
         match child
             .try_wait()
-            .map_err(|e| format!("查询安装进程状态失败: {e}"))?
+            .map_err(|e| format!("Failed to query install process status: {e}"))?
         {
             Some(status) => {
                 let elapsed = t_spawn.elapsed().as_secs();
                 let result = std::fs::read_to_string(&result_file)
                     .unwrap_or_default()
                     .trim()
-                    .trim_start_matches('\u{feff}') // strip UTF-8 BOM if present
+                    .trim_start_matches('\u{feff}')
                     .to_string();
                 let _ = std::fs::remove_file(&result_file);
+                let _ = std::fs::remove_file(&progress_file);
 
                 let exit_code = status.code().unwrap_or(-1);
                 emit_log(
                     "dim",
                     &format!(
-                        "安装进程已退出 (PID: {}, 退出码: {}, 耗时: {}s, 结果: {})",
-                        pid,
-                        exit_code,
-                        elapsed,
-                        if result.is_empty() { "(空)" } else { &result }
+                        "Install process exited (PID: {pid}, exit code: {exit_code}, elapsed: {elapsed}s)"
                     ),
                 );
 
                 if !status.success() && result.is_empty() {
-                    let msg = format!("安装脚本退出码: {exit_code}，未写入结果文件");
+                    let msg = format!("Install script exit code: {exit_code}, no result file written");
                     emit_log("error", &msg);
                     return Err(msg);
                 }
                 if let Some(err_msg) = result.strip_prefix("error:") {
                     let msg = err_msg.trim().to_string();
-                    emit_log("error", &format!("安装失败: {msg}"));
+                    emit_log("error", &format!("Installation failed: {msg}"));
                     return Err(msg);
                 }
                 if result != "install_ok" {
                     let msg = format!(
-                        "安装未返回成功状态（收到: '{result}'），请检查 PowerShell 窗口输出"
+                        "Install did not return success (got: '{result}'). Check PowerShell window output."
                     );
                     emit_log("error", &msg);
                     return Err(msg);
@@ -477,24 +511,24 @@ fn run_install_visible_sync(
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false)
                             {
-                                emit_log("info", "检测到已安装 OpenClaw，本次已跳过 CLI 安装步骤");
+                                emit_log("info", "OpenClaw already installed, CLI install step skipped.");
                             }
                         }
                     }
                 }
-                emit_log("ok", &format!("安装成功 (耗时: {elapsed}s)"));
+                emit_log("ok", &format!("Installation succeeded (elapsed: {elapsed}s)"));
                 return Ok(());
             }
             None => {
                 heartbeat += 1;
-                let elapsed = t_spawn.elapsed().as_secs();
-                emit_log(
-                    "dim",
-                    &format!(
-                        "安装进行中... (已等待 {elapsed}s，心跳 #{heartbeat}，请查看 PowerShell 窗口)"
-                    ),
-                );
-                std::thread::sleep(Duration::from_secs(5));
+                if heartbeat % 60 == 1 {
+                    let elapsed = t_spawn.elapsed().as_secs();
+                    emit_log(
+                        "dim",
+                        &format!("Install in progress... (waited {elapsed}s)")
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(500));
             }
         }
     }
@@ -511,6 +545,7 @@ pub fn get_app_state() -> Option<AppManifest> {
 
 /// 检测 Node.js 是否已安装且版本 >= 18
 fn check_node_installed() -> bool {
+    
     let mut cmd = Command::new("node");
     cmd.args(["--version"]).stdout(Stdio::piped()).stderr(Stdio::null());
     no_window!(cmd);
@@ -529,27 +564,39 @@ fn check_node_installed() -> bool {
     false
 }
 
-/// 检测环境是否已配置完成（用于第二次启动时决定跳步）
+/// 检测环境是否已配置完成（用于第二次启动时决定跳步）- 异步优化版本
 #[tauri::command]
-pub fn check_environment() -> CheckEnvironmentResult {
-    refresh_path();
-    let node_installed = check_node_installed();
-    let openclaw_installed = find_openclaw_cmd_fast().is_some();
+pub async fn check_environment() -> CheckEnvironmentResult {
+    
+    // 使用 tokio::task::spawn_blocking 将阻塞操作移到后台线程
+    let (node_installed, openclaw_installed) = tokio::try_join!(
+        tokio::task::spawn_blocking(|| {
+            refresh_path();
+            check_node_installed()
+        }),
+        tokio::task::spawn_blocking(|| find_openclaw_cmd_fast().is_some())
+    ).map_err(|e| format!("Task join error: {}", e)).unwrap_or((false, false));
 
-    let config_exists = openclaw_config_dir()
-        .ok()
-        .and_then(|dir| std::fs::read_to_string(dir.join("openclaw.json")).ok())
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| {
-            v.get("models")
-                .and_then(|m| m.get("providers"))
-                .and_then(|p| p.as_object())
-                .map(|o| !o.is_empty())
+    // 并行执行配置检查和 manifest 读取
+    let (config_exists, manifest) = tokio::try_join!(
+        tokio::task::spawn_blocking(|| {
+            openclaw_config_dir()
+                .ok()
+                .and_then(|dir| std::fs::read_to_string(dir.join("openclaw.json")).ok())
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| {
+                    v.get("models")
+                        .and_then(|m| m.get("providers"))
+                        .and_then(|p| p.as_object())
+                        .map(|o| !o.is_empty())
+                })
+                .unwrap_or(false)
+        }),
+        tokio::task::spawn_blocking(|| {
+            let install_dir = default_install_dir_inner();
+            read_manifest(&install_dir)
         })
-        .unwrap_or(false);
-
-    let install_dir = default_install_dir_inner();
-    let manifest = read_manifest(&install_dir);
+    ).map_err(|e| format!("Task join error: {}", e)).unwrap_or((false, None));
     let manifest_complete = manifest
         .as_ref()
         .map(|m| m.phase == "complete")
@@ -564,22 +611,34 @@ pub fn check_environment() -> CheckEnvironmentResult {
     }
 }
 
-/// 分步预检：OpenClaw 本地配置探测（用于首步快速判断）
+/// 分步预检：OpenClaw 本地配置探测（用于首步快速判断）- 异步优化版本
 #[tauri::command]
-pub fn syscheck_openclaw_config() -> SyscheckOpenclawConfigResult {
-    refresh_path();
-    let openclaw_installed = find_openclaw_cmd_fast().is_some();
-    let config_exists = openclaw_config_dir()
-        .ok()
-        .and_then(|dir| std::fs::read_to_string(dir.join("openclaw.json")).ok())
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| {
-            v.get("models")
-                .and_then(|m| m.get("providers"))
-                .and_then(|p| p.as_object())
-                .map(|o| !o.is_empty())
+pub async fn syscheck_openclaw_config() -> SyscheckOpenclawConfigResult {
+    // 并行执行 OpenClaw 检测和配置检查
+    let (openclaw_installed, config_exists) = tokio::try_join!(
+        tokio::task::spawn_blocking(|| {
+            // 只在第一次调用时刷新 PATH，后续使用缓存
+            static PATH_REFRESHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !PATH_REFRESHED.load(std::sync::atomic::Ordering::Relaxed) {
+                refresh_path();
+                PATH_REFRESHED.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            find_openclaw_cmd_fast().is_some()
+        }),
+        tokio::task::spawn_blocking(|| {
+            openclaw_config_dir()
+                .ok()
+                .and_then(|dir| std::fs::read_to_string(dir.join("openclaw.json")).ok())
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                .and_then(|v| {
+                    v.get("models")
+                        .and_then(|m| m.get("providers"))
+                        .and_then(|p| p.as_object())
+                        .map(|o| !o.is_empty())
+                })
+                .unwrap_or(false)
         })
-        .unwrap_or(false);
+    ).map_err(|e| format!("Task join error: {}", e)).unwrap_or((false, false));
 
     SyscheckOpenclawConfigResult {
         openclaw_installed,
@@ -588,18 +647,18 @@ pub fn syscheck_openclaw_config() -> SyscheckOpenclawConfigResult {
     }
 }
 
-/// 分步预检：管理员权限探测
+/// 分步预检：管理员权限探测 - 异步优化版本
 #[tauri::command]
-pub fn syscheck_admin() -> SyscheckAdminResult {
+pub async fn syscheck_admin() -> SyscheckAdminResult {
     SyscheckAdminResult {
-        admin: check_admin(),
+        admin: tokio::task::spawn_blocking(|| check_admin()).await.unwrap_or(false),
     }
 }
 
-/// 分步预检：内存探测（推荐 >= 8GB）
+/// 分步预检：内存探测（推荐 >= 8GB）- 异步优化版本
 #[tauri::command]
-pub fn syscheck_memory() -> SyscheckMemoryResult {
-    let (total_gb, available_gb) = get_memory_info_gb();
+pub async fn syscheck_memory() -> SyscheckMemoryResult {
+    let (total_gb, available_gb) = tokio::task::spawn_blocking(|| get_memory_info_gb()).await.unwrap_or((0.0, 0.0));
     let recommended_gb = 8.0;
     SyscheckMemoryResult {
         total_gb,
@@ -756,17 +815,29 @@ fn default_install_dir_inner() -> String {
     "C:\\OpenClaw".to_string()
 }
 
-fn check_path(path: &str) -> (bool, String, String) {
+fn check_path_with_fallback(path: &str, fallback: &str) -> (bool, String, String) {
     let has_non_ascii = path.chars().any(|c| !c.is_ascii());
     let has_space = path.contains(' ');
-    let fallback = default_install_dir_inner();
     if has_non_ascii {
-        return (false, format!("路径包含中文或特殊字符，建议使用 {}", fallback), fallback);
+        return (
+            false,
+            format!("路径包含中文或特殊字符，建议使用 {}", fallback),
+            fallback.to_string(),
+        );
     }
     if has_space {
-        return (false, format!("路径包含空格，建议使用 {}", fallback), fallback);
+        return (
+            false,
+            format!("路径包含空格，建议使用 {}", fallback),
+            fallback.to_string(),
+        );
     }
     (true, String::new(), path.to_string())
+}
+
+fn check_path(path: &str) -> (bool, String, String) {
+    let fallback = default_install_dir_inner();
+    check_path_with_fallback(path, &fallback)
 }
 
 /// 返回推荐的安装目录（基于当前用户的 %LOCALAPPDATA%）
@@ -794,7 +865,7 @@ pub async fn start_install(
 
     window.emit("install-log", serde_json::json!({
         "level": "dim",
-        "message": format!("脚本: {}", script.display())
+        "message": format!("Script: {}", script.display())
     })).ok();
 
     let mut manifest = read_manifest(&install_dir).unwrap_or_default();
@@ -803,22 +874,21 @@ pub async fn start_install(
     write_manifest(&manifest)?;
 
     window
-        .emit("install-progress", serde_json::json!({ "step": 0, "total": 4, "label": "开始安装" }))
+        .emit("install-progress", serde_json::json!({ "step": 0, "total": 4, "label": "start" }))
         .ok();
 
     let env_pairs = vec![
         ("OPENCLAW_INSTALL_DIR".to_string(), install_dir.clone()),
     ];
-    let result_file = std::env::temp_dir().join(format!(
-        "openclaw_result_{}.txt",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-    ));
+    let ts_suffix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let result_file = std::env::temp_dir().join(format!("openclaw_result_{ts_suffix}.txt"));
+    let progress_file = std::env::temp_dir().join(format!("openclaw_progress_{ts_suffix}.txt"));
 
     let install_result = tokio::task::spawn_blocking(move || {
-        run_install_visible_sync(window, script, env_pairs, "install-log", result_file)
+        run_install_visible_sync(window, script, env_pairs, "install-log", result_file, progress_file)
     })
     .await
     .map_err(|e| e.to_string());
@@ -827,8 +897,8 @@ pub async fn start_install(
         return Ok(CommandResult::error(
             "install.ps1",
             "INSTALL_TASK_JOIN_ERROR",
-            &format!("安装任务执行失败: {join_err}"),
-            Some("请重试或查看日志目录"),
+            &format!("Install task failed: {join_err}"),
+            Some("Please retry or check the log directory"),
             true,
         ));
     }
@@ -837,20 +907,20 @@ pub async fn start_install(
         let (code, message, hint) = if !check_node_installed() {
             (
                 "NODE_RUNTIME_NOT_READY",
-                "Node.js 安装或识别失败".to_string(),
-                Some("请确认 Node.js 18+ 已安装并可执行 node --version，然后重新打开安装器".to_string()),
+                "Node.js install or detection failed".to_string(),
+                Some("Please ensure Node.js 18+ is installed and node --version works, then reopen the installer.".to_string()),
             )
         } else if find_openclaw_cmd().is_none() {
             (
                 "OPENCLAW_NOT_FOUND",
-                "安装后仍找不到 openclaw 命令".to_string(),
+                "openclaw command not found after install".to_string(),
                 Some(build_openclaw_discovery_hint()),
             )
         } else {
             (
                 "INSTALL_SCRIPT_FAILED",
                 script_err.clone(),
-                Some("请查看 PowerShell 安装窗口中的报错并重试".to_string()),
+                Some("Check the PowerShell install window for errors and retry.".to_string()),
             )
         };
 
@@ -1497,7 +1567,13 @@ fn refresh_path() {
     if let Ok(o) = cmd.output() {
         let new_path = String::from_utf8_lossy(&o.stdout).trim().to_string();
         if !new_path.is_empty() {
-            std::env::set_var("PATH", &new_path);
+            // SAFETY: We are calling set_var in a controlled context where:
+            // 1. We are the only thread modifying PATH at this moment
+            // 2. This is called during startup/refresh operations, not concurrently
+            // 3. The new_path value is freshly obtained from the registry
+            unsafe {
+                std::env::set_var("PATH", &new_path);
+            }
         }
     }
 }
@@ -1625,100 +1701,120 @@ fn run_openclaw_cmd(args: &[&str]) -> CommandResult {
     }
 }
 
-/// 探测 openclaw CLI 能力
+/// 探测 openclaw CLI 能力 - 异步优化版本
 #[tauri::command]
-pub fn detect_cli_capabilities() -> CliCapabilities {
-    refresh_path();
-    
-    let oc_cmd = match find_openclaw_cmd() {
-        Some(c) => c,
-        None => return CliCapabilities {
-            version: None,
-            has_onboarding: false,
-            has_doctor: false,
-            has_gateway: false,
-            has_dashboard: false,
-            onboarding_flags: vec![],
-            doctor_flags: vec![],
-            gateway_flags: vec![],
-        },
-    };
+pub async fn detect_cli_capabilities() -> CliCapabilities {
+    tokio::task::spawn_blocking(|| {
+        refresh_path();
 
-    // 获取版本
-    let version = {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/c", &oc_cmd.to_string_lossy(), "--version"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        no_window!(cmd);
-        cmd.output()
-            .ok()
-            .and_then(|o| {
+        let oc_cmd = match find_openclaw_cmd() {
+            Some(c) => c,
+            None => {
+                return CliCapabilities {
+                    version: None,
+                    has_onboarding: false,
+                    has_doctor: false,
+                    has_gateway: false,
+                    has_dashboard: false,
+                    onboarding_flags: vec![],
+                    doctor_flags: vec![],
+                    gateway_flags: vec![],
+                }
+            }
+        };
+
+        let version = {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/c", &oc_cmd.to_string_lossy(), "--version"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            no_window!(cmd);
+            cmd.output().ok().and_then(|o| {
                 let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
                 if s.is_empty() { None } else { Some(s) }
             })
-    };
+        };
 
-    // 获取帮助信息来判断子命令是否存在
-    let help_output = {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/c", &oc_cmd.to_string_lossy(), "--help"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        no_window!(cmd);
-        cmd.output()
-            .map(|o| {
-                let stdout = String::from_utf8_lossy(&o.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&o.stderr).to_string();
-                format!("{}\n{}", stdout, stderr)
-            })
-            .unwrap_or_default()
-    };
+        let help_output = {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/c", &oc_cmd.to_string_lossy(), "--help"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            no_window!(cmd);
+            cmd.output()
+                .map(|o| {
+                    let stdout = String::from_utf8_lossy(&o.stdout).to_string();
+                    let stderr = String::from_utf8_lossy(&o.stderr).to_string();
+                    format!("{}\n{}", stdout, stderr)
+                })
+                .unwrap_or_default()
+        };
 
-    let has_onboarding = help_output.contains("onboard") || help_output.contains("onboarding");
-    let has_doctor = help_output.contains("doctor");
-    let has_gateway = help_output.contains("gateway");
-    let has_dashboard = help_output.contains("dashboard");
+        let has_onboarding = help_output.contains("onboard") || help_output.contains("onboarding");
+        let has_doctor = help_output.contains("doctor");
+        let has_gateway = help_output.contains("gateway");
+        let has_dashboard = help_output.contains("dashboard");
 
-    // 获取各子命令的 flags
-    let get_subcommand_flags = |subcmd: &str| -> Vec<String> {
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/c", &oc_cmd.to_string_lossy(), subcmd, "--help"])
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        no_window!(cmd);
-        let output = cmd.output().ok();
-        let text = output.map(|o| {
-            format!("{}\n{}", 
-                String::from_utf8_lossy(&o.stdout),
-                String::from_utf8_lossy(&o.stderr))
-        }).unwrap_or_default();
-        
-        let mut flags = vec![];
-        for line in text.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("--") || trimmed.starts_with("-") {
-                if let Some(flag) = trimmed.split_whitespace().next() {
+        let get_subcommand_flags = |subcmd: &str| -> Vec<String> {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/c", &oc_cmd.to_string_lossy(), subcmd, "--help"])
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            no_window!(cmd);
+            let output = cmd.output().ok();
+            let text = output
+                .map(|o| {
+                    format!(
+                        "{}\n{}",
+                        String::from_utf8_lossy(&o.stdout),
+                        String::from_utf8_lossy(&o.stderr)
+                    )
+                })
+                .unwrap_or_default();
+
+            let mut flags = vec![];
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if (trimmed.starts_with("--") || trimmed.starts_with("-"))
+                    && let Some(flag) = trimmed.split_whitespace().next()
+                {
                     flags.push(flag.trim_start_matches('-').to_string());
                 }
             }
-        }
-        flags
-    };
+            flags
+        };
 
-    CliCapabilities {
-        version,
-        has_onboarding,
-        has_doctor,
-        has_gateway,
-        has_dashboard,
-        onboarding_flags: if has_onboarding {
-            let flags = get_subcommand_flags("onboard");
-            if flags.is_empty() { get_subcommand_flags("onboarding") } else { flags }
-        } else { vec![] },
-        doctor_flags: if has_doctor { get_subcommand_flags("doctor") } else { vec![] },
-        gateway_flags: if has_gateway { get_subcommand_flags("gateway") } else { vec![] },
-    }
+        CliCapabilities {
+            version,
+            has_onboarding,
+            has_doctor,
+            has_gateway,
+            has_dashboard,
+            onboarding_flags: if has_onboarding {
+                let flags = get_subcommand_flags("onboard");
+                if flags.is_empty() {
+                    get_subcommand_flags("onboarding")
+                } else {
+                    flags
+                }
+            } else {
+                vec![]
+            },
+            doctor_flags: if has_doctor { get_subcommand_flags("doctor") } else { vec![] },
+            gateway_flags: if has_gateway { get_subcommand_flags("gateway") } else { vec![] },
+        }
+    })
+    .await
+    .unwrap_or_else(|_| CliCapabilities {
+        version: None,
+        has_onboarding: false,
+        has_doctor: false,
+        has_gateway: false,
+        has_dashboard: false,
+        onboarding_flags: vec![],
+        doctor_flags: vec![],
+        gateway_flags: vec![],
+    })
 }
 
 /// 运行 openclaw doctor 诊断
@@ -1781,8 +1877,9 @@ pub async fn run_doctor_fix() -> CommandResult {
 
 /// 运行 openclaw onboarding（非交互模式，跳过高级配置）
 #[tauri::command]
-pub async fn run_onboarding(api_key: String, provider: String) -> CommandResult {
+pub async fn run_onboarding(window: Window, api_key: String, provider: String) -> CommandResult {
     run_onboarding_impl(
+        window,
         api_key,
         provider,
         None,
@@ -1801,8 +1898,9 @@ pub async fn run_onboarding(api_key: String, provider: String) -> CommandResult 
 }
 
 #[tauri::command]
-pub async fn run_onboarding_with_model(api_key: String, provider: String, base_url: Option<String>, model: Option<String>) -> CommandResult {
+pub async fn run_onboarding_with_model(window: Window, api_key: String, provider: String, base_url: Option<String>, model: Option<String>) -> CommandResult {
     run_onboarding_impl(
+        window,
         api_key,
         provider,
         base_url,
@@ -1822,6 +1920,7 @@ pub async fn run_onboarding_with_model(api_key: String, provider: String, base_u
 
 #[tauri::command]
 pub async fn run_onboarding_guided(
+    window: Window,
     api_key: String,
     provider: String,
     base_url: Option<String>,
@@ -1835,6 +1934,7 @@ pub async fn run_onboarding_guided(
     launch_mode: Option<String>,
 ) -> CommandResult {
     run_onboarding_impl(
+        window,
         api_key,
         provider,
         base_url,
@@ -1853,6 +1953,7 @@ pub async fn run_onboarding_guided(
 }
 
 async fn run_onboarding_impl(
+    window: Window,
     api_key: String,
     provider: String,
     base_url: Option<String>,
@@ -2095,7 +2196,7 @@ async fn run_onboarding_impl(
         let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
 
         // 写入安装日志（记录最终传入的命令，便于排查）
-        {
+        let _install_log_dir = {
             let install_dir = std::env::var("USERPROFILE")
                 .map(|p| PathBuf::from(p).join("AppData").join("Local").join("OpenClaw"))
                 .unwrap_or_else(|_| PathBuf::from("C:\\OpenClaw"));
@@ -2114,9 +2215,169 @@ async fn run_onboarding_impl(
                 }
             }).collect();
             let _ = std::fs::write(&log_path, format!("args: {}\n", safe_args.join(" ")));
+            log_dir
+        };
+
+        let emit_event = |phase: &str, detail_key: &str, detail_vars: serde_json::Value| {
+            window.emit("onboarding-progress", serde_json::json!({
+                "phase": phase, "detail_key": detail_key, "detail_vars": detail_vars
+            })).ok();
+        };
+
+        emit_event("preparing", "onboarding.detail.preparing", serde_json::json!({}));
+
+        refresh_path();
+        let oc_cmd = match find_openclaw_cmd() {
+            Some(c) => c,
+            None => return CommandResult::error("onboarding", "CMD_NOT_FOUND", "找不到 openclaw 命令", Some(&build_openclaw_discovery_hint()), true),
+        };
+
+        let result_file = std::env::temp_dir().join(format!(
+            "openclaw_onboard_result_{}.txt",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        ));
+
+        // Build a PowerShell script that runs the onboard command and writes result
+        let ps_args: Vec<String> = args.iter().map(|s| {
+            format!("'{}'", s.replace('\'', "''"))
+        }).collect();
+        let oc_cmd_escaped = oc_cmd.to_string_lossy().replace('\'', "''");
+        let result_file_escaped = result_file.to_string_lossy().replace('\'', "''");
+        let ps_script = format!(
+            "try {{ & '{}' {} ; if ($LASTEXITCODE -eq 0) {{ [System.IO.File]::WriteAllText('{}', 'onboard_ok', [System.Text.Encoding]::ASCII) }} else {{ [System.IO.File]::WriteAllText('{}', \"error:exit_code_$LASTEXITCODE\", [System.Text.Encoding]::ASCII) }} }} catch {{ [System.IO.File]::WriteAllText('{}', \"error:$_\", [System.Text.Encoding]::ASCII) }}; Write-Host ''; Write-Host 'Onboard completed. Window will close in 3 seconds...' -ForegroundColor Cyan; Start-Sleep -Seconds 3",
+            oc_cmd_escaped,
+            ps_args.join(" "),
+            result_file_escaped,
+            result_file_escaped,
+            result_file_escaped,
+        );
+
+        emit_event("launching", "onboarding.detail.launching", serde_json::json!({}));
+
+        let mut cmd = Command::new("powershell");
+        cmd.args(["-NoProfile", "-Command", &ps_script]);
+        cmd.stdin(Stdio::null());
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => return CommandResult::error("onboarding", "SPAWN_ERROR", &format!("启动 PowerShell 失败: {e}"), None, true),
+        };
+
+        let pid = child.id();
+        emit_event("running", "onboarding.detail.runningPid", serde_json::json!({ "pid": pid }));
+
+        let t_spawn = std::time::Instant::now();
+        let mut heartbeat: u32 = 0;
+        let result: CommandResult;
+
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let elapsed = t_spawn.elapsed().as_secs();
+                    let file_result = std::fs::read_to_string(&result_file)
+                        .unwrap_or_default()
+                        .trim()
+                        .trim_start_matches('\u{feff}')
+                        .to_string();
+                    let _ = std::fs::remove_file(&result_file);
+
+                    let exit_code = status.code().unwrap_or(-1);
+
+                    let gateway_port: u16 = 18789;
+                    let gateway_alive = tcp_port_open(gateway_port);
+
+                    if file_result == "onboard_ok" {
+                        emit_event("done", "onboarding.detail.done", serde_json::json!({ "elapsed": elapsed }));
+                        result = CommandResult {
+                            success: true,
+                            code: "OK".into(),
+                            message: "综合配置执行成功".into(),
+                            hint: None,
+                            command: format!("openclaw {}", arg_refs.join(" ")),
+                            exit_code: Some(0),
+                            log_path: None,
+                            retriable: false,
+                            stdout: None,
+                            stderr: None,
+                        };
+                    } else if let Some(err_msg) = file_result.strip_prefix("error:") {
+                        if gateway_alive {
+                            emit_event("done", "onboarding.detail.doneGatewayWarn", serde_json::json!({ "err_msg": err_msg.trim(), "elapsed": elapsed }));
+                            result = CommandResult {
+                                success: true,
+                                code: "OK_WITH_WARNING".into(),
+                                message: "综合配置已执行，网关已成功启动".into(),
+                                hint: Some(format!(
+                                    "onboard 退出码为 {exit_code}（{}），但网关已在端口 {gateway_port} 运行。部分可选步骤可能未完成，可在管理界面中补充配置。",
+                                    err_msg.trim()
+                                )),
+                                command: format!("openclaw {}", arg_refs.join(" ")),
+                                exit_code: Some(exit_code),
+                                log_path: None,
+                                retriable: false,
+                                stdout: None,
+                                stderr: None,
+                            };
+                        } else {
+                            emit_event("failed", "onboarding.detail.failedMsg", serde_json::json!({ "msg": err_msg }));
+                            result = CommandResult::error(
+                                &format!("openclaw {}", arg_refs.join(" ")),
+                                &format!("EXIT_{exit_code}"),
+                                &format!("{} (网关未启动)", err_msg.trim()),
+                                Some("请查看 PowerShell 窗口中的报错并重试"),
+                                true,
+                            );
+                        }
+                    } else {
+                        if gateway_alive {
+                            emit_event("done", "onboarding.detail.doneGatewayExit", serde_json::json!({ "exit_code": exit_code, "elapsed": elapsed }));
+                            result = CommandResult {
+                                success: true,
+                                code: "OK_WITH_WARNING".into(),
+                                message: "综合配置已执行，网关已成功启动".into(),
+                                hint: Some(format!(
+                                    "onboard 退出码为 {exit_code}，但网关已在端口 {gateway_port} 运行。部分可选步骤可能未完成。"
+                                )),
+                                command: format!("openclaw {}", arg_refs.join(" ")),
+                                exit_code: Some(exit_code),
+                                log_path: None,
+                                retriable: false,
+                                stdout: None,
+                                stderr: None,
+                            };
+                        } else {
+                            emit_event("failed", "onboarding.detail.failed", serde_json::json!({ "exit_code": exit_code }));
+                            result = CommandResult::error(
+                                &format!("openclaw {}", arg_refs.join(" ")),
+                                &format!("EXIT_{exit_code}"),
+                                &format!("配置命令退出码: {exit_code}，网关未启动"),
+                                Some("请检查 PowerShell 窗口输出"),
+                                true,
+                            );
+                        }
+                    }
+                    break;
+                }
+                Ok(None) => {
+                    heartbeat += 1;
+                    if heartbeat % 15 == 1 {
+                        let elapsed = t_spawn.elapsed().as_secs();
+                        emit_event("running", "onboarding.detail.runningElapsed", serde_json::json!({ "elapsed": elapsed }));
+                    }
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+                Err(e) => {
+                    emit_event("failed", "onboarding.detail.failedQuery", serde_json::json!({ "error": e.to_string() }));
+                    result = CommandResult::error("onboarding", "WAIT_ERROR", &format!("查询进程状态失败: {e}"), None, true);
+                    break;
+                }
+            }
         }
 
-        let mut result = run_openclaw_cmd(&arg_refs);
+        let mut result = result;
         if result.success && !skipped_items.is_empty() {
             let skipped_text = skipped_items.join(", ");
             result.hint = Some(format!("已按 best-effort 跳过不支持项: {skipped_text}"));
@@ -2506,6 +2767,55 @@ pub fn open_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 打开可见 PowerShell 并执行真实环境清理脚本
+#[tauri::command]
+pub fn open_cleanup_powershell(app: AppHandle) -> Result<(), String> {
+    let script = get_script_path(&app, "cleanup-openclaw.ps1")?;
+    let invoke_expr = format!(
+        "& ([scriptblock]::Create([System.IO.File]::ReadAllText('{}')))",
+        script.to_string_lossy().replace('\'', "''")
+    );
+
+    let mut cmd = Command::new("powershell");
+    cmd.args([
+        "-NoProfile",
+        "-NoExit",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        &invoke_expr,
+    ])
+    .stdin(Stdio::null())
+    .stdout(Stdio::null())
+    .stderr(Stdio::null());
+
+    cmd.spawn()
+        .map_err(|e| format!("启动清理窗口失败: {e}"))?;
+
+    Ok(())
+}
+
+/// 校验清理状态（用于用户手动执行清理后的结果确认）
+#[tauri::command]
+pub fn verify_cleanup_state() -> CleanupVerificationResult {
+    refresh_path();
+
+    let user_profile = std::env::var("USERPROFILE").unwrap_or_default();
+    let app_data = std::env::var("APPDATA").unwrap_or_default();
+
+    let openclaw_dir = PathBuf::from(&user_profile).join(".openclaw");
+    let npm_openclaw_cmd = PathBuf::from(&app_data).join("npm").join("openclaw.cmd");
+
+    CleanupVerificationResult {
+        user_profile,
+        openclaw_dir: openclaw_dir.to_string_lossy().to_string(),
+        npm_openclaw_cmd: npm_openclaw_cmd.to_string_lossy().to_string(),
+        openclaw_dir_exists: openclaw_dir.exists(),
+        openclaw_cmd_found_in_path: find_openclaw_cmd_fast().is_some(),
+        npm_openclaw_cmd_exists: npm_openclaw_cmd.exists(),
+    }
+}
+
 /// 以管理员身份重新启动安装器（UAC 提权）
 #[tauri::command]
 pub fn relaunch_as_admin() -> Result<AdminRelaunchResult, String> {
@@ -2575,4 +2885,36 @@ fn create_desktop_shortcut(install_dir: &str) -> Result<(), String> {
     no_window!(cmd);
     cmd.spawn().map_err(|e| format!("创建快捷方式失败: {e}"))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_path_with_fallback;
+
+    #[test]
+    fn check_path_rejects_non_ascii() {
+        let fallback = "C:\\Users\\Tester\\AppData\\Local\\OpenClaw";
+        let (ok, issue, suggested) = check_path_with_fallback("C:\\测试目录\\OpenClaw", fallback);
+        assert!(!ok);
+        assert!(issue.contains("路径包含中文或特殊字符"));
+        assert_eq!(suggested, fallback);
+    }
+
+    #[test]
+    fn check_path_rejects_space() {
+        let fallback = "C:\\Users\\Tester\\AppData\\Local\\OpenClaw";
+        let (ok, issue, suggested) = check_path_with_fallback("C:\\Program Files\\OpenClaw", fallback);
+        assert!(!ok);
+        assert!(issue.contains("路径包含空格"));
+        assert_eq!(suggested, fallback);
+    }
+
+    #[test]
+    fn check_path_accepts_ascii_no_space() {
+        let fallback = "C:\\Users\\Tester\\AppData\\Local\\OpenClaw";
+        let (ok, issue, suggested) = check_path_with_fallback("C:\\OpenClaw", fallback);
+        assert!(ok);
+        assert!(issue.is_empty());
+        assert_eq!(suggested, "C:\\OpenClaw");
+    }
 }

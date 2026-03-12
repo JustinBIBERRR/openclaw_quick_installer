@@ -1,0 +1,19 @@
+{
+  "id": "CleanNoNode",
+  "description": "干净环境，无 Node/OpenClaw，winget 可用",
+  "simulate": {
+    "nodeMode": "missing",
+    "wingetAvailable": true,
+    "hideGit": true,
+    "hideBash": true,
+    "hideDocker": true,
+    "occupyPort18789": false,
+    "brokenOpenclawConfig": false,
+    "installDirMode": "default",
+    "networkRestricted": false
+  },
+  "expected": {
+    "installShouldPass": true,
+    "riskLevel": "P0"
+  }
+}

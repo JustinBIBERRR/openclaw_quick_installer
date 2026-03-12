@@ -10,6 +10,23 @@ export type WizardStep =
   | "onboarding"
   | "launching";
 
+// 新的前端展示步骤，包含额外的欢迎页和成功页
+export type DisplayStep =
+  | "welcome"
+  | "syscheck"
+  | "installing"
+  | "onboarding"
+  | "launching"
+  | "success";
+
+// 步骤映射：定义 DisplayStep 如何映射到后端 WizardStep 和 AppPhase
+export interface StepMapping {
+  displayStep: DisplayStep;
+  wizardStep: WizardStep | null; // null 表示纯前端步骤
+  requiredPhase: AppPhase | null; // 该步骤需要的后端状态
+  canSkipTo: boolean; // 是否可以通过恢复逻辑直接跳转到此步骤
+}
+
 export type LogLevel = "info" | "ok" | "warn" | "error" | "dim";
 
 export interface LogEntry {
@@ -153,4 +170,14 @@ export interface OnboardingSummary {
   command: string;
   message: string;
   hint: string | null;
+}
+
+// 安装成功摘要，用于成功页展示
+export interface InstallationSummary {
+  installDir: string;
+  gatewayPort: number;
+  gatewayUrl: string;
+  apiProvider: string;
+  apiConfigured: boolean;
+  onboardingSummary: OnboardingSummary | null;
 }

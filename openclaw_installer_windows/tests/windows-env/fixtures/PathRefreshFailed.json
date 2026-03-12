@@ -1,0 +1,19 @@
+{
+  "id": "PathRefreshFailed",
+  "description": "安装后 PATH 发现异常，验证 openclaw 定位提示",
+  "simulate": {
+    "nodeMode": "ready",
+    "wingetAvailable": true,
+    "hideGit": true,
+    "hideBash": true,
+    "hideDocker": true,
+    "occupyPort18789": false,
+    "brokenOpenclawConfig": false,
+    "installDirMode": "default",
+    "networkRestricted": false
+  },
+  "expected": {
+    "installShouldPass": false,
+    "riskLevel": "P1"
+  }
+}

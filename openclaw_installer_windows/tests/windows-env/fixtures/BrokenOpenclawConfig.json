@@ -1,0 +1,19 @@
+{
+  "id": "BrokenOpenclawConfig",
+  "description": "已有损坏的 ~/.openclaw/openclaw.json",
+  "simulate": {
+    "nodeMode": "ready",
+    "wingetAvailable": true,
+    "hideGit": true,
+    "hideBash": true,
+    "hideDocker": true,
+    "occupyPort18789": false,
+    "brokenOpenclawConfig": true,
+    "installDirMode": "default",
+    "networkRestricted": false
+  },
+  "expected": {
+    "installShouldPass": true,
+    "riskLevel": "P1"
+  }
+}

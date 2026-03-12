@@ -1,0 +1,17 @@
+﻿{
+    "profile":  "CleanNoNode",
+    "createdAt":  "2026-03-12T11:46:10",
+    "sessionRoot":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime\\session-CleanNoNode-20260312-114610",
+    "binDir":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime\\session-CleanNoNode-20260312-114610\\bin",
+    "profileRoot":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime\\session-CleanNoNode-20260312-114610\\profile",
+    "appData":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime\\session-CleanNoNode-20260312-114610\\profile\\AppData\\Roaming",
+    "localAppData":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime\\session-CleanNoNode-20260312-114610\\profile\\AppData\\Local",
+    "appDataNpm":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime\\session-CleanNoNode-20260312-114610\\profile\\AppData\\Roaming\\npm",
+    "evidenceDir":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime\\session-CleanNoNode-20260312-114610\\evidence",
+    "installDir":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime\\session-CleanNoNode-20260312-114610\\profile\\AppData\\Local\\OpenClaw",
+    "portBlockerPid":  null,
+    "networkRestricted":  false,
+    "npmMode":  "ok",
+    "npmPrefix":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime\\session-CleanNoNode-20260312-114610\\profile\\AppData\\Roaming\\npm",
+    "nodeMode":  "missing"
+}

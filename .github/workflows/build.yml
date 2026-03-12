@@ -10,9 +10,46 @@ permissions:
   contents: write   # 允许 GITHUB_TOKEN 创建 Release 和上传附件
 
 jobs:
+  test-fast:
+    name: Fast Regression Gate
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        working-directory: openclaw_installer_windows
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: openclaw_installer_windows/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Run frontend tests
+        run: npm run test:ui
+
+      - name: Run Rust tests
+        run: npm run test:rust
+
+      - name: Run PowerShell/Pester tests
+        run: npm run test:ps
+
   build-windows:
     name: Build Windows Installer
     runs-on: windows-latest
+    needs: test-fast
 
     defaults:
       run:
@@ -134,3 +171,23 @@ jobs:
             openclaw_installer_windows/src-tauri/resources/node-v22-win-x64.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release-gate:
+    name: Release Gate Summary
+    runs-on: windows-latest
+    needs:
+      - test-fast
+      - build-windows
+    if: always()
+
+    steps:
+      - name: Validate gate
+        shell: pwsh
+        run: |
+          if ("${{ needs.test-fast.result }}" -ne "success") {
+            Write-Error "Fast Regression Gate failed"
+          }
+          if ("${{ needs.build-windows.result }}" -ne "success") {
+            Write-Error "Build Windows Installer failed"
+          }
+          Write-Host "Release gate passed."

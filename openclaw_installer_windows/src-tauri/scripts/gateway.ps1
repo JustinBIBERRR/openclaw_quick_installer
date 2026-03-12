@@ -1,15 +1,10 @@
-# OpenClaw Gateway 管理脚本
-# 参数通过环境变量传入（由 Tauri 注入）
+# OpenClaw Gateway script
+# Params via env vars (injected by Tauri)
 $Action     = if ($env:GW_ACTION)      { $env:GW_ACTION }      else { "status" }
 $InstallDir = if ($env:GW_INSTALL_DIR) { $env:GW_INSTALL_DIR } else { "C:\OpenClaw" }
 $Port       = if ($env:GW_PORT)        { [int]$env:GW_PORT }   else { 18789 }
 
 $ErrorActionPreference = "Continue"
-
-$_dbgLog = "d:\CODE\openclawInstaller\openclaw_installer_windows\.cursor\debug.log"
-function Dbg { param($loc,$msg,$data) try { $ts=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds(); $j=@{location=$loc;message=$msg;data=$data;timestamp=$ts;runId='ps-gateway';hypothesisId='GW'}|ConvertTo-Json -Compress; Add-Content -Path $_dbgLog -Value $j -Encoding utf8 } catch {} }
-
-Dbg "gateway.ps1:entry" "script entered" @{Action=$Action;InstallDir=$InstallDir;Port=$Port}
 
 function Log-Info  { param($msg) Write-Output "[INFO] $msg" }
 function Log-OK    { param($msg) Write-Output "[OK] $msg" }
@@ -30,11 +25,11 @@ function Test-GatewayHealth {
 }
 
 function Find-OpenClaw {
-    # 优先找 .cmd 文件（Start-Process 能直接执行）
+    # Prefer .cmd (Start-Process can run it directly)
     $cmd = (Get-Command "openclaw.cmd" -ErrorAction SilentlyContinue).Source
     if ($cmd -and (Test-Path $cmd)) { return $cmd }
 
-    # 如果 Get-Command 返回 .ps1，推导同目录下的 .cmd
+    # If Get-Command returns .ps1, resolve .cmd in same dir
     $any = (Get-Command "openclaw" -ErrorAction SilentlyContinue).Source
     if ($any) {
         $dir = Split-Path $any -Parent
@@ -42,7 +37,7 @@ function Find-OpenClaw {
         if (Test-Path $cmdInDir) { return $cmdInDir }
     }
 
-    # npm prefix 查找
+    # npm prefix fallback
     try {
         $npmPrefix = (& npm config get prefix 2>&1).Trim()
         if ($npmPrefix) {
@@ -51,7 +46,7 @@ function Find-OpenClaw {
         }
     } catch {}
 
-    # %APPDATA%\npm 兜底
+    # %APPDATA%\npm fallback
     $appDataNpm = "$env:APPDATA\npm\openclaw.cmd"
     if (Test-Path $appDataNpm) { return $appDataNpm }
 
@@ -73,13 +68,12 @@ function Write-PID { param($pid_val)
     }
 }
 
-# ── 全局 try/catch：确保任何异常都能输出到 stdout（前端可见）─────────────
+# ── Global try/catch: ensure errors go to stdout (visible to frontend) ─────────
 try {
 
 Refresh-Path
-Dbg "gateway.ps1:path-refreshed" "PATH refreshed" @{PATH_len=$env:PATH.Length}
 
-# ── 启动 ─────────────────────────────────────────────────────────────
+# ── Start ────────────────────────────────────────────────────────────
 if ($Action -eq "start") {
     Log-Info "gateway.ps1 starting (port=$Port, dir=$InstallDir)"
 
@@ -89,18 +83,15 @@ if ($Action -eq "start") {
         exit 0
     }
 
-    Dbg "gateway.ps1:health-checked" "health check done, not running" @{}
 
     New-Item -ItemType Directory -Force -Path "$InstallDir\logs" | Out-Null
 
     Log-Info "Searching for openclaw executable..."
     $ocExe = Find-OpenClaw
-    Dbg "gateway.ps1:find-oc" "Find-OpenClaw result" @{ocExe="$ocExe"}
 
     if (-not $ocExe) {
         Log-Error "Cannot find openclaw command"
         Log-Error "Searched: PATH, npm prefix, $env:APPDATA\npm\"
-        Dbg "gateway.ps1:oc-not-found" "openclaw not found" @{PATH=$env:PATH}
         Write-Output "[RESULT]failed"
         exit 1
     }
@@ -111,9 +102,9 @@ if ($Action -eq "start") {
     "" | Out-File $STDOUT_LOG -Encoding utf8 -Force
     "" | Out-File $STDERR_LOG -Encoding utf8 -Force
 
-    # 统一使用 OpenClaw 官方默认配置目录 (~/.openclaw)
+    # Use OpenClaw default config dir (~/.openclaw)
 
-    # .cmd 文件需要通过 cmd.exe 启动，否则 Start-Process + Redirect 可能失败
+    # .cmd must be run via cmd.exe or Start-Process redirect may fail
     $isCmdFile = $ocExe.EndsWith(".cmd")
     if ($isCmdFile) {
         $startExe = "cmd.exe"
@@ -124,7 +115,6 @@ if ($Action -eq "start") {
     }
 
     Log-Info "Launch: $startExe $($startArgs -join ' ')"
-    Dbg "gateway.ps1:pre-start" "about to Start-Process" @{exe=$startExe;args=($startArgs -join ' ');isCmdFile=$isCmdFile}
 
     try {
         $proc = Start-Process -FilePath $startExe `
@@ -135,21 +125,18 @@ if ($Action -eq "start") {
     } catch {
         $errMsg = $_.Exception.Message
         Log-Error "Start-Process failed: $errMsg"
-        Dbg "gateway.ps1:start-process-fail" "Start-Process exception" @{error=$errMsg}
         Write-Output "[RESULT]failed"
         exit 1
     }
 
     if (-not $proc -or -not $proc.Id) {
         Log-Error "Start-Process returned null"
-        Dbg "gateway.ps1:proc-null" "proc is null after Start-Process" @{}
         Write-Output "[RESULT]failed"
         exit 1
     }
 
     Write-PID $proc.Id
     Log-OK "Process started (PID: $($proc.Id))"
-    Dbg "gateway.ps1:proc-started" "process created" @{pid=$proc.Id}
 
     $deadline = (Get-Date).AddSeconds(60)
     $lastLineCount = 0
@@ -172,7 +159,6 @@ if ($Action -eq "start") {
                     if ($line.Trim() -ne "") { Log-Dim "  stdout: $line" }
                 }
             }
-            Dbg "gateway.ps1:proc-exited" "process exited early" @{exitCode=$proc.ExitCode}
             break
         }
 
@@ -200,19 +186,17 @@ if ($Action -eq "start") {
 
     if ($started) {
         Log-OK "Gateway ready -> http://localhost:$Port"
-        Dbg "gateway.ps1:ready" "gateway is ready" @{port=$Port;pid=$proc.Id}
         Write-Output "[RESULT]started:$($proc.Id)"
     } else {
         Log-Error "Gateway did not become ready within 60s"
         Log-Error "stdout log: $STDOUT_LOG"
         Log-Error "stderr log: $STDERR_LOG"
-        Dbg "gateway.ps1:timeout" "gateway timeout" @{}
         Write-Output "[RESULT]failed"
         exit 1
     }
 }
 
-# ── 停止 ─────────────────────────────────────────────────────────────
+# ── Stop ─────────────────────────────────────────────────────────────
 elseif ($Action -eq "stop") {
     $stopped = $false
     try {
@@ -236,7 +220,7 @@ elseif ($Action -eq "stop") {
     Write-Output "[RESULT]stopped"
 }
 
-# ── 状态 ─────────────────────────────────────────────────────────────
+# ── Status ───────────────────────────────────────────────────────────
 elseif ($Action -eq "status") {
     if (Test-GatewayHealth) { Write-Output "running" } else { Write-Output "stopped" }
 }
@@ -246,7 +230,6 @@ elseif ($Action -eq "status") {
     $errPos = $_.InvocationInfo.PositionMessage
     Log-Error "UNHANDLED EXCEPTION: $errMsg"
     Log-Error "Position: $errPos"
-    Dbg "gateway.ps1:unhandled" "unhandled exception" @{error=$errMsg;position=$errPos}
     Write-Output "[RESULT]failed"
     exit 1
 }

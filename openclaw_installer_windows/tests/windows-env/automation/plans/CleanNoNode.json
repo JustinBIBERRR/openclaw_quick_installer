@@ -1,0 +1,14 @@
+{
+  "description": "等待窗口出现，激活窗口，并尝试键盘触发开始安装",
+  "actions": [
+    { "type": "wait_window", "timeoutSec": 20 },
+    { "type": "screenshot", "name": "clean-before-start.png" },
+    { "type": "activate" },
+    { "type": "sleep", "ms": 2500 },
+    { "type": "keys", "keys": "{TAB}" },
+    { "type": "sleep", "ms": 400 },
+    { "type": "keys", "keys": "{ENTER}" },
+    { "type": "sleep", "ms": 2000 },
+    { "type": "screenshot", "name": "clean-after-start.png" }
+  ]
+}

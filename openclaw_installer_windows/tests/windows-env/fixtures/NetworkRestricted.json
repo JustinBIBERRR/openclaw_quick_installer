@@ -1,0 +1,19 @@
+{
+  "id": "NetworkRestricted",
+  "description": "网络受限场景（下载和模型验证风险）",
+  "simulate": {
+    "nodeMode": "ready",
+    "wingetAvailable": true,
+    "hideGit": true,
+    "hideBash": true,
+    "hideDocker": true,
+    "occupyPort18789": false,
+    "brokenOpenclawConfig": false,
+    "installDirMode": "default",
+    "networkRestricted": true
+  },
+  "expected": {
+    "installShouldPass": false,
+    "riskLevel": "P1"
+  }
+}

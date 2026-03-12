@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertCircle, CheckCircle, Eye, EyeOff, Loader } from "lucide-react";
+import { listen } from "@tauri-apps/api/event";
+import { AlertCircle, CheckCircle, Eye, EyeOff, Loader, Terminal } from "lucide-react";
 import type {
   ApiProvider,
   ApiProviderConfig,
@@ -10,6 +11,7 @@ import type {
   SavedApiConfig,
   SavedFeishuConfig,
 } from "../types";
+import { useI18n } from "../i18n/useI18n";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const BTN_PRIMARY = "flex items-center gap-2 px-6 py-2.5 bg-brand-500 hover:bg-brand-600 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 font-semibold text-sm rounded-xl transition-colors";
@@ -93,16 +95,18 @@ const PROVIDERS: ApiProviderConfig[] = [
   },
   {
     id: "custom",
-    name: "自定义 API（OpenAI 兼容）",
+    name: "", // use t("config.providerCustomName") when rendering
     keyPrefix: "",
     defaultBaseUrl: "",
     models: [],
-    placeholder: "输入您的 API Key",
+    placeholder: "", // use t("config.placeholderApiKey") when rendering
   },
 ];
 
 export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mode, onDone, onCancel }: Props) {
+  const { t } = useI18n();
   const apiKeyInputRef = useRef<HTMLInputElement | null>(null);
+  const progressPanelRef = useRef<HTMLDivElement | null>(null);
 
   const [provider, setProvider] = useState<ApiProvider>("anthropic");
   const [model, setModel] = useState(PROVIDERS[0].models[0] || "");
@@ -124,13 +128,28 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
   const [launchMode, setLaunchMode] = useState<LaunchMode>("web");
 
   const [running, setRunning] = useState(false);
+  const [runPhase, setRunPhase] = useState<string>("");
+  const [runDetailKey, setRunDetailKey] = useState<string | null>(null);
+  const [runDetailVars, setRunDetailVars] = useState<Record<string, string | number>>({});
+  const [runElapsed, setRunElapsed] = useState(0);
+  const visualProgress = runPhase === "done" ? 100 : Math.min(95, runElapsed * 2);
+  const runTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [hint, setHint] = useState<string | null>(null);
   const [localCaps, setLocalCaps] = useState<CliCapabilities | null>(null);
   const [capsLoading, setCapsLoading] = useState(false);
 
-  const [detectedMsg, setDetectedMsg] = useState("");
   const [detectedConfig, setDetectedConfig] = useState<SavedApiConfig | null>(null);
+  const detectedMsg = useMemo(() => {
+    if (!detectedConfig) return "";
+    const prov = (savedProvider: string) =>
+      savedProvider === "custom" ? t("config.providerCustom") : savedProvider;
+    return t("config.detectedApi", {
+      provider: (["anthropic", "openai", "deepseek", "custom"] as const).includes(detectedConfig.provider as ApiProvider)
+        ? prov(detectedConfig.provider)
+        : t("config.providerCustom"),
+    });
+  }, [detectedConfig, t]);
 
   const pConfig = PROVIDERS.find((p) => p.id === provider)!;
   const effectiveBaseUrl = baseUrl || pConfig.defaultBaseUrl;
@@ -158,6 +177,38 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
   const hasFlag = (name: string) => normFlags.has(name.toLowerCase()) || normFlags.has(name.replace(/^--/, "").toLowerCase());
 
   useEffect(() => {
+    if (!isTauri) return;
+    const unlisten = listen<{ phase: string; detail?: string; detail_key?: string; detail_vars?: Record<string, string | number> }>(
+      "onboarding-progress",
+      (e) => {
+        setRunPhase(e.payload.phase);
+        if (e.payload.detail_key != null) {
+          setRunDetailKey(e.payload.detail_key);
+          setRunDetailVars(e.payload.detail_vars ?? {});
+        } else {
+          setRunDetailKey(null);
+          setRunDetailVars({});
+        }
+      }
+    );
+    return () => { unlisten.then((f) => f()); };
+  }, []);
+
+  useEffect(() => {
+    if (running) {
+      setRunElapsed(0);
+      runTimerRef.current = setInterval(() => setRunElapsed((s) => s + 1), 1000);
+      requestAnimationFrame(() => {
+        progressPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+      });
+    } else if (runTimerRef.current) {
+      clearInterval(runTimerRef.current);
+      runTimerRef.current = null;
+    }
+    return () => { if (runTimerRef.current) clearInterval(runTimerRef.current); };
+  }, [running]);
+
+  useEffect(() => {
     if (!isTauri || cliCaps || mode === "wizard") return;
     setCapsLoading(true);
     invoke<CliCapabilities>("detect_cli_capabilities")
@@ -179,7 +230,6 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
         setBaseUrl(saved.base_url || "");
         setModel(saved.model || "");
         setDetectedConfig(saved);
-        setDetectedMsg(`已检测到 ${savedProvider === "custom" ? "自定义" : savedProvider} 的 API 配置，已自动填充`);
       })
       .catch(() => {});
   }, []);
@@ -195,7 +245,7 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
           setEnableChannel(true);
         }
         setFeishuValidateState("ok");
-        setFeishuValidateMsg("已检测到历史飞书配置");
+        setFeishuValidateMsg(t("config.feishuDetected"));
       })
       .catch(() => {});
   }, []);
@@ -233,9 +283,9 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
     unsupported: "text-yellow-400 border-yellow-500/40 bg-yellow-500/10",
   };
   const stateLabel: Record<ItemState, string> = {
-    run: "将执行",
-    skip: "已跳过",
-    unsupported: "版本不支持，将跳过",
+    run: t("config.stateRun"),
+    skip: t("config.stateSkip"),
+    unsupported: t("config.stateUnsupported"),
   };
 
   const daemonState: ItemState = "run";
@@ -249,25 +299,25 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
 
   const buildReason = (key: string, state: ItemState): string => {
     if (state === "skip") {
-      if (key === "api") return "用户选择跳过 API 配置";
-      if (key === "launch") return "用户选择跳过启动方式配置";
-      return "用户未启用该子步骤";
+      if (key === "api") return t("config.reasonSkipApi");
+      if (key === "launch") return t("config.reasonSkipLaunch");
+      return t("config.reasonUserDisabled");
     }
     if (state === "unsupported") {
-      if (key === "channel") return "缺少 --channel/--channels";
-      if (key === "skills") return "缺少 --install-skills";
-      if (key === "hooks") return "缺少 --install-hooks";
-      if (key === "launch") return "缺少 --ui/--web/--tui";
-      return "当前版本缺少对应参数";
+      if (key === "channel") return t("config.reasonNoChannel");
+      if (key === "skills") return t("config.reasonNoSkills");
+      if (key === "hooks") return t("config.reasonNoHooks");
+      if (key === "launch") return t("config.reasonNoLaunch");
+      return t("config.reasonNoParam");
     }
-    if (key === "api") return "将写入 API Key/模型配置";
-    if (key === "daemon") return "必选参数，始终传入 --install-daemon";
-    if (key === "channel") return `飞书凭据将传递给 onboard（--feishu-app-id/secret）`;
-    if (key === "feishu") return "将写入飞书 appId/appSecret 并尝试传递给 onboard";
-    if (key === "skills") return "将传入 --install-skills";
-    if (key === "hooks") return "将传入 --install-hooks";
-    if (key === "launch") return launchMode === "web" ? "onboard 默认启动 Web 界面" : "onboard 将以 TUI 模式启动";
-    return "将按当前设置执行";
+    if (key === "api") return t("config.reasonApi");
+    if (key === "daemon") return t("config.reasonDaemon");
+    if (key === "channel") return t("config.reasonChannel");
+    if (key === "feishu") return t("config.reasonFeishu");
+    if (key === "skills") return t("config.reasonSkills");
+    if (key === "hooks") return t("config.reasonHooks");
+    if (key === "launch") return launchMode === "web" ? t("config.reasonLaunchWeb") : t("config.reasonLaunchTui");
+    return t("config.reasonDefault");
   };
 
   function resetToBlank() {
@@ -276,7 +326,6 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
     setBaseUrl("");
     setModel("");
     setDetectedConfig(null);
-    setDetectedMsg("");
     setSkipApiConfig(false);
     requestAnimationFrame(() => {
       apiKeyInputRef.current?.focus();
@@ -284,8 +333,13 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
   }
 
   async function runConfig() {
-    if (!keyValid || !baseUrlValid || !feishuReady) return;
+    if (!keyValid || !baseUrlValid || !feishuReady) {
+      return;
+    }
     setRunning(true);
+    setRunPhase("preparing");
+    setRunDetailKey(null);
+    setRunDetailVars({});
     setError(null);
     setHint(null);
     try {
@@ -293,7 +347,7 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
         await new Promise((r) => setTimeout(r, 500));
         onDone({
           command: commandPreview,
-          message: "预览模式：已跳过实际执行",
+          message: t("config.previewSkipped"),
           hint: null,
         });
         return;
@@ -301,9 +355,6 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
       // 注意：has_onboarding=false 可能是 CLI 探测时找不到命令（PATH 问题）而非真正不支持
       // 此处仅在确认 CLI 存在但明确不包含 onboard 命令时才跳过，避免误杀
       // 实际 run_onboarding_guided 在 Rust 端有自己的错误处理
-      // #region agent log
-      fetch('http://127.0.0.1:7244/ingest/266bf96a-5673-475a-a7f1-1ee0eed8a36c',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1c7103'},body:JSON.stringify({sessionId:'1c7103',runId:'fix-has-onboarding-v1',hypothesisId:'HO1',location:'UnifiedConfigPanel.tsx:runConfig',message:'runConfig 继续执行（已移除 has_onboarding 守卫）',data:{has_onboarding:effectiveCaps?.has_onboarding,flags_count:effectiveCaps?.onboarding_flags?.length??0,effectiveCapsNull:!effectiveCaps},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
 
       if (feishuEnabled) {
         const passed = await validateFeishuConnectivity();
@@ -325,7 +376,7 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
       });
 
       if (!result.success) {
-        setError(result.message || "综合配置执行失败");
+        setError(result.message || t("config.execFailed"));
         setHint(result.hint || null);
         return;
       }
@@ -335,7 +386,7 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
       }
       onDone({
         command: result.command || commandPreview,
-        message: result.message || "综合配置执行完成",
+        message: result.message || t("config.execDone"),
         hint: result.hint || null,
       });
     } catch (e) {
@@ -349,11 +400,11 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
     if (!feishuEnabled) return true;
     if (!feishuAppId.trim() || !feishuAppSecret.trim()) {
       setFeishuValidateState("error");
-      setFeishuValidateMsg("请先填写飞书 appId 与 appSecret");
+      setFeishuValidateMsg(t("config.feishuFillFirst"));
       return false;
     }
     setFeishuValidateState("validating");
-    setFeishuValidateMsg("正在校验飞书连通性...");
+    setFeishuValidateMsg(t("config.feishuValidating"));
     try {
       const result = await invoke<ValidateResult>("validate_feishu_connectivity", {
         appId: feishuAppId.trim(),
@@ -361,11 +412,11 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
       });
       if (result.status === "ok") {
         setFeishuValidateState("ok");
-        setFeishuValidateMsg(result.message || "飞书连通性校验通过");
+        setFeishuValidateMsg(result.message || t("config.feishuOk"));
         return true;
       }
       setFeishuValidateState("error");
-      setFeishuValidateMsg(result.message || "飞书连通性校验失败");
+      setFeishuValidateMsg(result.message || t("config.feishuFail"));
       return false;
     } catch (e) {
       setFeishuValidateState("error");
@@ -374,43 +425,47 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
     }
   }
 
-  const title = mode === "wizard" ? "综合配置" : "综合配置（API / 技能 / 启动方式）";
-  const subtitle = mode === "wizard"
-    ? "将 API 配置与可选能力配置合并执行，可按需跳过"
-    : "安装完成后可随时修改 API、skills、hooks、channel 与启动方式";
-
+  const title = mode === "wizard" ? t("config.title.wizard") : t("config.title.manager");
+  const subtitle = mode === "wizard" ? t("config.subtitle.wizard") : t("config.subtitle.manager");
   return (
-    <div className="h-full flex flex-col gap-5 overflow-y-auto">
+    <div className="h-full flex flex-col">
+      {/* ── Scrollable content ── */}
+      <div className="flex-1 min-h-0 overflow-y-auto flex flex-col gap-5 pb-2">
+      {/* Wizard 模式下由 OnboardingSetup 已展示步骤标题与描述，此处仅保留提示文案；弹窗时展示完整标题与描述 */}
       <div>
-        <h2 className="text-xl font-semibold text-slate-100 tracking-tight">{title}</h2>
-        <p className="text-sm text-slate-400 mt-1">{subtitle}</p>
+        {mode === "manager" && (
+          <>
+            <h2 className="text-xl font-semibold text-slate-100 tracking-tight">{title}</h2>
+            <p className="text-sm text-slate-400 mt-1">{subtitle}</p>
+          </>
+        )}
         {detectedMsg && <p className="text-xs text-brand-300 mt-2">{detectedMsg}</p>}
-        {(cliCapsLoading || capsLoading) && <p className="text-xs text-slate-500 mt-1">正在检测 CLI 能力...</p>}
+        {(cliCapsLoading || capsLoading) && <p className="text-xs text-slate-500 mt-1">{t("config.detectingCli")}</p>}
       </div>
 
       <div className="bg-gradient-to-b from-slate-900 to-slate-900/70 rounded-2xl border border-slate-800 p-5 flex flex-col gap-5 shadow-sm">
         <div className="border-b border-slate-800 pb-4">
           <div className="flex items-center justify-between mb-3">
-            <p className="text-sm font-medium text-slate-100">API 配置</p>
+            <p className="text-sm font-medium text-slate-100">{t("config.section.api")}</p>
             <div className="flex items-center gap-2 text-xs text-slate-400">
-              <span>跳过 API 配置</span>
+              <span>{t("config.skipApi")}</span>
               <Toggle checked={skipApiConfig} onChange={setSkipApiConfig} />
             </div>
           </div>
 
           {detectedConfig && (
             <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-3.5 mb-3">
-              <p className="text-xs text-slate-400">已检测配置</p>
+              <p className="text-xs text-slate-400">{t("config.detectedConfig")}</p>
               <div className="mt-1.5 text-xs text-slate-300 space-y-1">
                 <p>Provider: {detectedConfig.provider || "-"}</p>
-                <p>Base URL: {detectedConfig.base_url || "(默认)"}</p>
-                <p>Model: {detectedConfig.model || "(未记录)"}</p>
+                <p>Base URL: {detectedConfig.base_url || t("config.default")}</p>
+                <p>Model: {detectedConfig.model || t("config.notRecorded")}</p>
               </div>
               <button
                 onClick={resetToBlank}
                 className="mt-2 text-xs text-slate-400 hover:text-slate-200 underline underline-offset-2 transition-colors"
               >
-                恢复为默认空白
+                {t("config.resetToBlank")}
               </button>
             </div>
           )}
@@ -432,19 +487,19 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
                         : "border-slate-700 bg-slate-900 text-slate-400 hover:border-slate-600 hover:text-slate-300"
                       }`}
                   >
-                    {p.name}
+                    {p.id === "custom" ? t("config.providerCustomName") : p.name}
                   </button>
                 ))}
               </div>
 
               <div>
-                <label className="block text-xs text-slate-400 mb-1">模型</label>
+                <label className="block text-xs text-slate-400 mb-1">{t("config.model")}</label>
                 {provider === "custom" ? (
                   <input
                     type="text"
                     value={model}
                     onChange={(e) => setModel(e.target.value)}
-                    placeholder="例如：openai/gpt-4o-mini"
+                    placeholder={t("config.modelPlaceholder")}
                     className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200 outline-none focus:border-brand-400 font-mono"
                     style={{ userSelect: "text" }}
                   />
@@ -463,7 +518,7 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
 
               {provider === "custom" && (
                 <div>
-                  <label className="block text-xs text-slate-400 mb-1">Base URL（必填）</label>
+                  <label className="block text-xs text-slate-400 mb-1">{t("config.baseUrlRequired")}</label>
                   <input
                     type="text"
                     value={baseUrl}
@@ -474,7 +529,7 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
                   />
                   {baseUrl && !baseUrlValid && (
                     <p className="text-xs text-yellow-500 mt-1">
-                      Base URL 格式无效，请输入 http(s) 开头的完整地址
+                      {t("config.baseUrlInvalid")}
                     </p>
                   )}
                 </div>
@@ -484,7 +539,7 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
                 <label className="block text-xs text-slate-400 mb-1">
                   API Key
                   {pConfig.keyPrefix && (
-                    <span className="text-slate-600 ml-1">（应以 {pConfig.keyPrefix} 开头）</span>
+                    <span className="text-slate-600 ml-1">{t("config.apiKeyPrefix", { prefix: pConfig.keyPrefix })}</span>
                   )}
                 </label>
                 <div className="relative">
@@ -493,7 +548,7 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
                     type={showKey ? "text" : "password"}
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
-                    placeholder={pConfig.placeholder}
+                    placeholder={pConfig.id === "custom" ? t("config.placeholderApiKey") : pConfig.placeholder}
                     className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 pr-10 text-sm text-slate-200 outline-none focus:border-brand-400 font-mono"
                     style={{ userSelect: "text" }}
                   />
@@ -506,7 +561,7 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
                 </div>
                 {apiKey && !keyValid && pConfig.keyPrefix && (
                   <p className="text-xs text-yellow-500 mt-1">
-                    Key 格式似乎不正确，{pConfig.name} 的 Key 应以 {pConfig.keyPrefix} 开头
+                    {t("config.keyFormatInvalid", { name: pConfig.name || pConfig.id, prefix: pConfig.keyPrefix })}
                   </p>
                 )}
               </div>
@@ -517,11 +572,11 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
         <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3">
             <div>
-              <p className="text-sm text-slate-200">安装 daemon</p>
-              <p className="text-xs text-slate-500 mt-0.5">随系统自启动，保持后台常驻（推荐）</p>
+              <p className="text-sm text-slate-200">{t("config.installDaemon")}</p>
+              <p className="text-xs text-slate-500 mt-0.5">{t("config.installDaemonDesc")}</p>
             </div>
             <div className="flex items-center gap-2">
-              <span className="text-xs text-brand-400/80">已开启</span>
+              <span className="text-xs text-brand-400/80">{t("config.daemonOn")}</span>
               <Toggle checked={true} disabled={true} />
             </div>
           </div>
@@ -529,8 +584,8 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
           <div className="border-t border-slate-800 pt-3">
             <div className="flex items-center justify-between bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3">
               <div>
-                <p className="text-sm text-slate-200">配置 channel</p>
-                <p className="text-xs text-slate-500 mt-0.5">推荐配置飞书以使用 Bot 集成</p>
+                <p className="text-sm text-slate-200">{t("config.channel")}</p>
+                <p className="text-xs text-slate-500 mt-0.5">{t("config.channelDesc")}</p>
               </div>
               <Toggle checked={enableChannel} onChange={setEnableChannel} />
             </div>
@@ -546,13 +601,13 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
                 }}
                 className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 text-sm text-slate-200"
               >
-                <option value="feishu">飞书（推荐）</option>
-                <option value="none">不设置 channel</option>
+                <option value="feishu">{t("config.feishuOption")}</option>
+                <option value="none">{t("config.channelNone")}</option>
               </select>
 
               {channel === "feishu" && (
                 <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-3.5 space-y-3">
-                  <p className="text-xs text-slate-400">飞书集成配置</p>
+                  <p className="text-xs text-slate-400">{t("config.feishuConfig")}</p>
                   <div>
                     <label className="block text-xs text-slate-400 mb-1">App ID</label>
                     <input
@@ -578,7 +633,7 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
                           setFeishuValidateState("idle");
                           setFeishuValidateMsg("");
                         }}
-                        placeholder="输入飞书应用密钥"
+                        placeholder={t("config.feishuAppSecretPlaceholder")}
                         className="w-full bg-slate-800 border border-slate-700 rounded-xl px-3 py-2.5 pr-10 text-sm text-slate-200 outline-none focus:border-brand-400 font-mono"
                       />
                       <button
@@ -595,7 +650,7 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
                       disabled={feishuValidateState === "validating" || !feishuAppId.trim() || !feishuAppSecret.trim()}
                       className="px-3 py-1.5 text-xs bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-lg border border-slate-700 transition-colors"
                     >
-                      {feishuValidateState === "validating" ? "校验中..." : "校验飞书连通性"}
+                      {feishuValidateState === "validating" ? t("config.validating") : t("config.validateFeishu")}
                     </button>
                     {feishuValidateState !== "idle" && (
                       <p className={`text-xs flex items-center gap-1.5 ${feishuValidateState === "ok" ? "text-emerald-300" : feishuValidateState === "error" ? "text-red-400" : "text-slate-400"}`}>
@@ -615,16 +670,16 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
         <div className="flex flex-col gap-2 border-t border-slate-800 pt-3">
           <div className="flex items-center justify-between bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3">
             <div>
-              <p className="text-sm text-slate-200">安装 skills（可选）</p>
-              <p className="text-xs text-slate-500 mt-0.5">安装预置技能包</p>
+              <p className="text-sm text-slate-200">{t("config.installSkills")}</p>
+              <p className="text-xs text-slate-500 mt-0.5">{t("config.installSkillsDesc")}</p>
             </div>
             <Toggle checked={installSkills} onChange={setInstallSkills} />
           </div>
 
           <div className="flex items-center justify-between bg-slate-900/60 border border-slate-800 rounded-xl px-4 py-3">
             <div>
-              <p className="text-sm text-slate-200">安装 hooks（可选）</p>
-              <p className="text-xs text-slate-500 mt-0.5">安装 Git hooks 集成</p>
+              <p className="text-sm text-slate-200">{t("config.installHooks")}</p>
+              <p className="text-xs text-slate-500 mt-0.5">{t("config.installHooksDesc")}</p>
             </div>
             <Toggle checked={installHooks} onChange={setInstallHooks} />
           </div>
@@ -632,49 +687,49 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
 
         <div className="border-t border-slate-800 pt-4">
           <p className="text-sm text-slate-200 mb-2">
-            启动方式
-            <span className="ml-2 text-xs text-slate-500">（不可跳过）</span>
+            {t("config.launchMode")}
+            <span className="ml-2 text-xs text-slate-500">{t("config.launchModeRequired")}</span>
           </p>
           <div className="grid grid-cols-2 gap-2">
             <button
               onClick={() => setLaunchMode("web")}
               className={`text-sm rounded-xl px-3 py-2.5 border transition-colors ${launchMode === "web" ? "border-brand-400 text-brand-300 bg-brand-500/10" : "border-slate-700 text-slate-400 hover:border-slate-600"}`}
             >
-              Web（默认）
+              {t("config.webDefault")}
             </button>
             <button
               onClick={() => setLaunchMode("tui")}
               className={`text-sm rounded-xl px-3 py-2.5 border transition-colors ${launchMode === "tui" ? "border-brand-400 text-brand-300 bg-brand-500/10" : "border-slate-700 text-slate-400 hover:border-slate-600"}`}
             >
-              TUI
+              {t("config.tui")}
             </button>
           </div>
         </div>
 
         <div className="border-t border-slate-800 pt-4">
-          <p className="text-xs text-slate-500 mb-1">命令预览（best-effort）</p>
+          <p className="text-xs text-slate-500 mb-1">{t("config.commandPreview")}</p>
           <p className="text-xs text-slate-300 font-mono break-all bg-slate-900 border border-slate-800 rounded-xl px-3 py-2">
             {commandPreview}
           </p>
           <p className="text-[11px] text-slate-600 mt-1">
-            实际执行时将按当前 CLI 支持能力自动跳过不兼容参数。
+            {t("config.commandPreviewHint")}
           </p>
         </div>
 
         <div className="border-t border-slate-800 pt-4">
           <p className="text-xs text-slate-500 mb-2">
-            子步骤执行状态
-            {cliLoading && <span className="ml-2 text-slate-600">（CLI 能力检测中...）</span>}
+            {t("config.substepStatus")}
+            {cliLoading && <span className="ml-2 text-slate-600">{t("config.cliDetecting")}</span>}
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {[
-              { key: "api", label: "API 配置", state: skipApiConfig ? "skip" : "run" as ItemState },
-              { key: "daemon", label: "daemon", state: daemonState },
+              { key: "api", label: t("config.labelApi"), state: skipApiConfig ? "skip" : "run" as ItemState },
+              { key: "daemon", label: t("config.labelDaemon"), state: daemonState },
               { key: "channel", label: "channel", state: channelState },
-              { key: "feishu", label: "飞书凭据", state: feishuState },
+              { key: "feishu", label: t("config.labelFeishu"), state: feishuState },
               { key: "skills", label: "skills", state: skillsState },
               { key: "hooks", label: "hooks", state: hooksState },
-              { key: "launch", label: `启动方式(${launchMode})`, state: launchState },
+              { key: "launch", label: `${t("config.labelLaunch")}(${launchMode})`, state: launchState },
             ].map((item) => (
               <div key={item.label} className="text-xs border border-slate-800 rounded-xl px-3 py-2 bg-slate-900/60">
                 <div className="flex items-center justify-between">
@@ -692,43 +747,87 @@ export default function UnifiedConfigPanel({ cliCaps, cliCapsLoading = false, mo
         {error && <p className="text-xs text-red-400">{error}</p>}
         {hint && <p className="text-xs text-yellow-500">{hint}</p>}
       </div>
+      </div>{/* ── End scrollable content ── */}
 
-      <div className="flex-1" />
+      {/* ── Fixed footer: always visible at bottom ── */}
+      {running ? (
+        <div ref={progressPanelRef} className="flex-shrink-0 border border-slate-700 rounded-2xl overflow-hidden bg-slate-900/95 mt-2 shadow-[0_-4px_16px_rgba(0,0,0,0.3)]">
+          {/* Progress bar with shimmer */}
+          <div className="h-1.5 w-full bg-white/5 relative overflow-hidden">
+            <div
+              className="absolute top-0 left-0 h-full bg-brand-500 shadow-[0_0_12px_rgba(0,229,255,0.6)] transition-all duration-1000 ease-out"
+              style={{ width: `${visualProgress}%` }}
+            />
+            <div className="absolute top-0 left-0 h-full w-full">
+              <div className="h-full bg-gradient-to-r from-transparent via-white/20 to-transparent animate-shimmer" />
+            </div>
+          </div>
 
-      <div className="flex items-center justify-between pt-1">
-        <div className="flex items-center gap-3">
-          {onCancel && (
-            <button
-              onClick={onCancel}
-              disabled={running}
-              className={BTN_TEXT}
-            >
-              取消
-            </button>
-          )}
-          {mode === "wizard" && (
-            <button
-              onClick={() => onDone({
-                command: "",
-                message: "用户选择跳过综合配置",
-                hint: null,
-              })}
-              disabled={running}
-              className={BTN_TEXT}
-            >
-              跳过配置，继续
-            </button>
+          <div className="px-4 py-3 flex items-center gap-3">
+            <Terminal size={14} className="text-brand-400 flex-shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-slate-200 truncate">
+                {runPhase === "running"
+                  ? t("config.progressRunning")
+                  : runPhase === "launching"
+                    ? t("config.progressLaunching")
+                    : t("config.progressPreparing")}
+              </p>
+              {runDetailKey && (
+                <p className="text-xs text-slate-500 mt-0.5 truncate">
+                  {t(runDetailKey, runDetailVars as Record<string, string | number>)}
+                </p>
+              )}
+            </div>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              <Loader size={14} className="text-brand-400 animate-spin" />
+              <span className="text-xs text-slate-500 font-mono">{runElapsed}s</span>
+            </div>
+          </div>
+
+          {isTauri && runPhase === "running" && (
+            <div className="px-4 py-2 bg-yellow-500/10 border-t border-yellow-500/20">
+              <p className="text-[0.68rem] text-yellow-300">
+                {t("config.psWindowHint")}
+              </p>
+            </div>
           )}
         </div>
-        <button
-          onClick={runConfig}
-          disabled={running || !keyValid || !baseUrlValid || !feishuReady || (!skipApiConfig && !effectiveModel)}
-          className={BTN_PRIMARY}
-        >
-          {running && <Loader size={14} className="animate-spin" />}
-          {mode === "wizard" ? "执行综合配置并继续 →" : "保存并应用配置"}
-        </button>
-      </div>
+      ) : (
+        <div className="flex-shrink-0 flex items-center justify-between pt-3 border-t border-slate-800/50">
+          <div className="flex items-center gap-3">
+            {onCancel && (
+              <button
+                onClick={onCancel}
+                disabled={running}
+                className={BTN_TEXT}
+              >
+                {t("config.cancel")}
+              </button>
+            )}
+            {mode === "wizard" && (
+              <button
+                onClick={() => onDone({
+                  command: "",
+                  message: t("config.userSkippedConfig"),
+                  hint: null,
+                })}
+                disabled={running}
+                className={BTN_TEXT}
+              >
+                {t("config.skipAndContinue")}
+              </button>
+            )}
+          </div>
+          <button
+            onClick={runConfig}
+            disabled={running || !keyValid || !baseUrlValid || !feishuReady || (!skipApiConfig && !effectiveModel)}
+            className={BTN_PRIMARY}
+          >
+            {mode === "wizard" ? t("config.runAndContinue") : t("config.saveAndApply")}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

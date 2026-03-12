@@ -1,0 +1,19 @@
+{
+  "id": "NpmGlobalInstallDenied",
+  "description": "npm 全局安装权限失败模拟",
+  "simulate": {
+    "nodeMode": "ready",
+    "wingetAvailable": true,
+    "hideGit": true,
+    "hideBash": true,
+    "hideDocker": true,
+    "occupyPort18789": false,
+    "brokenOpenclawConfig": false,
+    "installDirMode": "default",
+    "networkRestricted": false
+  },
+  "expected": {
+    "installShouldPass": false,
+    "riskLevel": "P0"
+  }
+}

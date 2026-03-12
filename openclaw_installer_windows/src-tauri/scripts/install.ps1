@@ -1,9 +1,10 @@
 $ErrorActionPreference = "Continue"
 
 $ResultFile = $env:OPENCLAW_RESULT_FILE
+$ProgressFile = $env:OPENCLAW_PROGRESS_FILE
 $InstallDir = if ($env:OPENCLAW_INSTALL_DIR) { $env:OPENCLAW_INSTALL_DIR } else { "$env:USERPROFILE\OpenClaw" }
 
-# ── 日志工具 ──────────────────────────────────────────────────────────────────
+# ── Log helpers ───────────────────────────────────────────────────────────────
 $_logDir  = "$InstallDir\logs"
 $_logFile = "$_logDir\install-$(Get-Date -Format 'yyyyMMdd-HHmmss').log"
 $_t0      = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
@@ -35,6 +36,21 @@ function LogOk   { param($msg) Write-Log "ok"    $msg }
 function LogInfo { param($msg) Write-Log "info"  $msg }
 function LogWarn { param($msg) Write-Log "warn"  $msg }
 
+function Write-Progress-File {
+    param([int]$Step, [int]$Total, [string]$Label)
+    if ($ProgressFile) {
+        try {
+            [System.IO.File]::WriteAllText($ProgressFile, "$Step/$Total $Label", [System.Text.Encoding]::ASCII)
+        } catch {}
+    }
+}
+
+function Get-ScriptSleepSeconds {
+    param([int]$normalSeconds)
+    if ($env:OPENCLAW_TEST_MODE -eq "1") { return 0 }
+    return $normalSeconds
+}
+
 function Fail {
     param($msg)
     Write-Log "error" $msg
@@ -42,9 +58,9 @@ function Fail {
         [System.IO.File]::WriteAllText($ResultFile, "error:$msg", [System.Text.Encoding]::ASCII)
     }
     Write-Host ""
-    Write-Host "安装失败，窗口将在 10 秒后关闭。如需查看完整日志请前往：" -ForegroundColor Yellow
+    Write-Host "Installation failed. This window will close in 10 seconds. Full log:" -ForegroundColor Yellow
     Write-Host "  $_logFile" -ForegroundColor Gray
-    Start-Sleep -Seconds 10
+    Start-Sleep -Seconds (Get-ScriptSleepSeconds 10)
     exit 1
 }
 
@@ -53,49 +69,54 @@ function Update-Path {
                 [System.Environment]::GetEnvironmentVariable("PATH", "User")
 }
 
-# ── 启动记录 ──────────────────────────────────────────────────────────────────
-Write-Log "info" "OpenClaw 安装脚本启动 | InstallDir=$InstallDir | ResultFile=$ResultFile"
+# ── Startup ────────────────────────────────────────────────────────────────────
+Write-Log "info" "OpenClaw install script started | InstallDir=$InstallDir | ResultFile=$ResultFile"
 
 try {
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     New-Item -ItemType Directory -Force -Path $_logDir   | Out-Null
 } catch {
-    Fail "创建安装目录失败: $_"
+    Fail "Failed to create install directory: $_"
 }
 
-# ── 阶段 1: 检测 Node.js ──────────────────────────────────────────────────────
-Step "1/3" "检测 Node.js 运行时"
+# ── Phase 1: Node.js ───────────────────────────────────────────────────────────
+Write-Progress-File -Step 1 -Total 4 -Label "detectingNode"
+Step "1/3" "Checking Node.js runtime"
 $_t1 = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $nodeReady = $false
 try {
     $nodeVersion = & node --version 2>&1
     if ($LASTEXITCODE -eq 0 -and $nodeVersion -match "v(\d+)\." -and [int]$Matches[1] -ge 18) {
         $nodeReady = $true
-        Write-Log "info" "已有 Node.js: $nodeVersion"
-        LogOk "检测到 Node.js: $nodeVersion"
+        Write-Log "info" "Node.js found: $nodeVersion"
+        LogOk "Node.js detected: $nodeVersion"
+        Write-Progress-File -Step 1 -Total 4 -Label "nodeReady"
     } else {
-        Write-Log "info" "node --version 输出: $nodeVersion（版本不足或未安装）"
+        Write-Log "info" "node --version output: $nodeVersion (version too old or not installed)"
     }
 } catch {
-    Write-Log "info" "node 检测异常: $_"
+    Write-Log "info" "Node check exception: $_"
 }
 
 if (-not $nodeReady) {
-    LogInfo "未检测到 Node.js 18+，尝试使用 winget 安装 Node.js LTS..."
+    Write-Progress-File -Step 1 -Total 4 -Label "installingNode"
+    LogInfo "Node.js 18+ not found. Installing Node.js LTS via winget..."
     winget install --id OpenJS.NodeJS.LTS -e --source winget --accept-package-agreements --accept-source-agreements
     $wingetNodeExit = $LASTEXITCODE
-    Write-Log "info" "winget install Node.js 退出码: $wingetNodeExit | 耗时: $([math]::Round(([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()-$_t1)/1000,1))s"
+    Write-Log "info" "winget install Node.js exit code: $wingetNodeExit | elapsed: $([math]::Round(([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()-$_t1)/1000,1))s"
     if ($wingetNodeExit -ne 0) {
-        Fail "Node.js 安装失败（winget 退出码 $wingetNodeExit），请手动安装 Node.js 18+ 后重试"
+        Fail "Node.js installation failed (winget exit code $wingetNodeExit). Please install Node.js 18+ manually and retry."
     }
     Update-Path
     $nodeVersion = & node --version 2>&1
-    Write-Log "info" "安装后 node 版本: $nodeVersion"
-    LogOk "Node.js 安装完成: $nodeVersion"
+    Write-Log "info" "node version after install: $nodeVersion"
+    LogOk "Node.js installed: $nodeVersion"
+    Write-Progress-File -Step 1 -Total 4 -Label "nodeReady"
 }
 
-# ── 阶段 2: 检测 / 安装 OpenClaw ──────────────────────────────────────────────
-Step "2/3" "检测 / 安装 OpenClaw"
+# ── Phase 2: OpenClaw CLI ──────────────────────────────────────────────────────
+Write-Progress-File -Step 2 -Total 4 -Label "connectingNpm"
+Step "2/3" "Checking / Installing OpenClaw"
 $_t2 = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 Update-Path
 
@@ -107,42 +128,46 @@ try {
     if ($existingOcCmd) {
         $existingOcVer = & $existingOcCmd.Source --version 2>&1
         if ($LASTEXITCODE -eq 0 -and "$existingOcVer".Trim()) {
-            Write-Log "info" "检测到已安装 OpenClaw: $existingOcVer | 路径: $($existingOcCmd.Source)"
-            LogOk "已存在 OpenClaw，跳过安装"
+            Write-Log "info" "OpenClaw already installed: $existingOcVer | path: $($existingOcCmd.Source)"
+            LogOk "OpenClaw found, skipping install"
             $openclawAlreadyInstalled = $true
+            Write-Progress-File -Step 2 -Total 4 -Label "cliReady"
         } else {
             $existingOcVer = $null
         }
     }
 } catch {
-    Write-Log "warn" "预检 openclaw --version 失败，将继续安装: $_"
+    Write-Log "warn" "openclaw --version check failed, continuing install: $_"
     $existingOcVer = $null
 }
 
 if (-not $existingOcVer) {
-    LogInfo "执行: npm install -g openclaw@latest"
-    LogInfo "（安装过程约 1-2 分钟，以下为 npm 实时输出）"
+    Write-Progress-File -Step 2 -Total 4 -Label "downloadingCli"
+    LogInfo "Running: npm install -g openclaw@latest"
+    LogInfo "(Install may take 1-2 minutes, npm output below)"
     Write-Host ""
+    Write-Progress-File -Step 2 -Total 4 -Label "installingCli"
     npm install -g openclaw@latest
     $ocInstallExit = $LASTEXITCODE
     Write-Host ""
-    Write-Log "info" "npm install -g openclaw@latest 退出码: $ocInstallExit | 耗时: $([math]::Round(([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()-$_t2)/1000,1))s"
+    Write-Log "info" "npm install -g openclaw@latest exit code: $ocInstallExit | elapsed: $([math]::Round(([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()-$_t2)/1000,1))s"
     if ($ocInstallExit -ne 0) {
-        Fail "npm install -g openclaw@latest 失败（退出码 $ocInstallExit）"
+        Fail "npm install -g openclaw@latest failed (exit code $ocInstallExit)"
     }
+    Write-Progress-File -Step 2 -Total 4 -Label "cliReady"
 }
 
-# ── 阶段 3: 验证 ──────────────────────────────────────────────────────────────
-Step "3/3" "验证安装"
+# ── Phase 3: Verify ──────────────────────────────────────────────────────────
+Write-Progress-File -Step 3 -Total 4 -Label "verifyingInstall"
+Step "3/3" "Verifying installation"
 Update-Path
 $ocVer = $null
 $ocCmd = Get-Command openclaw -ErrorAction SilentlyContinue
 if (-not $ocCmd) { $ocCmd = Get-Command openclaw.cmd -ErrorAction SilentlyContinue }
 if ($ocCmd) {
     $ocVer = & $ocCmd.Source --version 2>&1
-    Write-Log "info" "openclaw 路径: $($ocCmd.Source) | 版本输出: $ocVer"
+    Write-Log "info" "openclaw path: $($ocCmd.Source) | version: $ocVer"
 } else {
-    # 尝试常见路径
     $candidates = @(
         "$env:APPDATA\npm\openclaw.cmd",
         "$env:USERPROFILE\.openclaw\bin\openclaw"
@@ -150,19 +175,20 @@ if ($ocCmd) {
     foreach ($c in $candidates) {
         if (Test-Path $c) {
             $ocVer = & $c --version 2>&1
-            Write-Log "info" "openclaw 候选路径: $c | 版本输出: $ocVer"
+            Write-Log "info" "openclaw candidate path: $c | version: $ocVer"
             break
         }
     }
 }
 if (-not $ocVer) {
-    Fail "无法找到 openclaw 命令，安装可能未成功。请重新打开终端后手动运行 openclaw --version 确认"
+    Fail "openclaw command not found. Install may have failed. Reopen terminal and run openclaw --version to confirm."
 }
-LogOk "openclaw 版本: $ocVer"
+LogOk "openclaw version: $ocVer"
 
-# ── 写入安装信息 ──────────────────────────────────────────────────────────────
+# ── Write install info ────────────────────────────────────────────────────────
+Write-Progress-File -Step 3 -Total 4 -Label "writingConfig"
 $totalSec = [math]::Round(([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $_t0) / 1000, 1)
-Write-Log "info" "安装完成 | 总耗时: ${totalSec}s | 日志: $_logFile"
+Write-Log "info" "Install complete | total elapsed: ${totalSec}s | log: $_logFile"
 
 $installInfo = @{
     install_dir  = $InstallDir
@@ -175,9 +201,10 @@ $installInfo = @{
 } | ConvertTo-Json
 $installInfo | Out-File "$InstallDir\install-info.json" -Encoding utf8
 
+Write-Progress-File -Step 4 -Total 4 -Label "allDone"
 if ($ResultFile) {
     [System.IO.File]::WriteAllText($ResultFile, "install_ok", [System.Text.Encoding]::ASCII)
 }
-LogOk "安装完成！总耗时 ${totalSec}s，窗口将在 3 秒后自动关闭..."
-LogInfo "完整日志已保存至: $_logFile"
-Start-Sleep -Seconds 3
+LogOk "Installation complete. Total ${totalSec}s. This window will close in 3 seconds..."
+LogInfo "Full log saved to: $_logFile"
+Start-Sleep -Seconds (Get-ScriptSleepSeconds 3)

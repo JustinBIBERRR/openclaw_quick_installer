@@ -1,0 +1,19 @@
+{
+  "id": "ChineseUserProfile",
+  "description": "中文用户名环境（USERPROFILE 含中文）",
+  "simulate": {
+    "nodeMode": "ready",
+    "wingetAvailable": true,
+    "hideGit": true,
+    "hideBash": true,
+    "hideDocker": true,
+    "occupyPort18789": false,
+    "brokenOpenclawConfig": false,
+    "installDirMode": "default",
+    "networkRestricted": false
+  },
+  "expected": {
+    "installShouldPass": true,
+    "riskLevel": "P1"
+  }
+}

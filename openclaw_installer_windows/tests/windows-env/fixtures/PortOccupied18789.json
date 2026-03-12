@@ -1,0 +1,19 @@
+{
+  "id": "PortOccupied18789",
+  "description": "本地 18789 端口被占用",
+  "simulate": {
+    "nodeMode": "ready",
+    "wingetAvailable": true,
+    "hideGit": true,
+    "hideBash": true,
+    "hideDocker": true,
+    "occupyPort18789": true,
+    "brokenOpenclawConfig": false,
+    "installDirMode": "default",
+    "networkRestricted": false
+  },
+  "expected": {
+    "installShouldPass": true,
+    "riskLevel": "P1"
+  }
+}

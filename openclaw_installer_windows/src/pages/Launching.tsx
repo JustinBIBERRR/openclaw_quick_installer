@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { Loader, RefreshCw, ExternalLink, Square, Stethoscope, Wrench, FolderOpen, Copy, CheckCircle } from "lucide-react";
+import { Loader, RefreshCw, Square, Stethoscope, Wrench } from "lucide-react";
 import LogScroller from "../components/LogScroller";
 import type { AppManifest, LogEntry, DoctorResult, CommandResult, CliCapabilities, OnboardingSummary } from "../types";
+import { useI18n } from "../i18n/useI18n";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -18,51 +19,54 @@ interface Props {
 
 type LaunchPhase = "idle" | "starting" | "done" | "failed" | "diagnosing" | "fixing";
 
-function buildGatewayRecoveryTips(message: string, code: string | null, backendHint: string | null): { hint: string | null; tips: string[] } {
+function buildGatewayRecoveryTips(
+  message: string,
+  code: string | null,
+  backendHint: string | null,
+  t: (key: string) => string
+): { hint: string | null; tips: string[] } {
   const lower = `${code || ""} ${message} ${backendHint || ""}`.toLowerCase();
   const tips: string[] = [];
   let hint = backendHint;
 
   if (lower.includes("too many failed authentication attempts") || lower.includes("authentication attempts")) {
-    hint = "浏览器可能缓存了旧 token。请重启 Gateway 后，用浏览器无痕模式重新打开。";
-    tips.push("先点击“重新启动”重启 Gateway");
-    tips.push("使用浏览器无痕模式打开 Dashboard / Chat");
+    hint = t("launching.recovery.authCache");
+    tips.push(t("launching.recovery.tipRestart"));
+    tips.push(t("launching.recovery.tipIncognito"));
   }
   if (lower.includes("no api key found") || lower.includes("auth-profiles")) {
-    hint = hint || "未找到可用 API Key，请先检查模型配置或 agent 认证配置。";
-    tips.push("先点击“诊断问题”查看 doctor 结论");
-    tips.push("再点击“一键修复”并重新启动");
+    hint = hint || t("launching.recovery.noApiKey");
+    tips.push(t("launching.recovery.tipDiagnose"));
+    tips.push(t("launching.recovery.tipFix"));
   }
   if (lower.includes("gateway.mode") || lower.includes("mode local") || lower.includes("unconfigured")) {
-    hint = hint || "网关模式或配置未就绪，建议先运行诊断与修复。";
-    tips.push("优先运行 doctor / doctor --fix");
+    hint = hint || t("launching.recovery.gatewayMode");
+    tips.push(t("launching.recovery.tipDoctor"));
   }
   if (lower.includes("cmd_not_found") || lower.includes("找不到 openclaw")) {
-    hint = hint || "系统未发现 openclaw 命令。请重新打开安装器后重试。";
-    tips.push("检查 PATH 与 npm prefix，必要时重新安装 CLI");
+    hint = hint || t("launching.recovery.cmdNotFound");
+    tips.push(t("launching.recovery.tipPath"));
   }
   if (tips.length === 0) {
-    tips.push("先点击“诊断问题”查看详细原因");
-    tips.push("查看 installer 日志并复制诊断信息反馈");
+    tips.push(t("launching.recovery.tipDiagnoseFirst"));
+    tips.push(t("launching.recovery.tipCopyLog"));
   }
 
   return { hint, tips };
 }
 
 export default function Launching({ manifest, cliCaps, onboardingSummary, logs, addLog, onDone }: Props) {
+  const { t } = useI18n();
   const [phase, setPhase] = useState<LaunchPhase>("idle");
   const [errorMsg, setErrorMsg] = useState("");
   const [errorHint, setErrorHint] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
-  const [logPath, setLogPath] = useState<string | null>(null);
+  const [, setLogPath] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
   const [stopping, setStopping] = useState(false);
-  const [doctorResult, setDoctorResult] = useState<DoctorResult | null>(null);
-  const [fixResult, setFixResult] = useState<CommandResult | null>(null);
-  const [copied, setCopied] = useState(false);
+  const [, setDoctorResult] = useState<DoctorResult | null>(null);
+  const [, setFixResult] = useState<CommandResult | null>(null);
   const [recoveryTips, setRecoveryTips] = useState<string[]>([]);
-  const [openingChat, setOpeningChat] = useState(false);
-  const [chatLocked, setChatLocked] = useState(false);
   const startedRef = useRef(false);
   const cancelledRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -83,11 +87,6 @@ export default function Launching({ manifest, cliCaps, onboardingSummary, logs, 
     };
   }, []);
 
-  useEffect(() => {
-    if (phase !== "starting") return;
-    if (elapsed !== 1 && elapsed !== 5 && elapsed !== 30) return;
-  }, [elapsed, phase]);
-
   async function startGateway() {
     cancelledRef.current = false;
     setPhase("starting");
@@ -101,7 +100,7 @@ export default function Launching({ manifest, cliCaps, onboardingSummary, logs, 
     setElapsed(0);
     setStopping(false);
     timerRef.current = setInterval(() => setElapsed((e) => e + 1), 1000);
-    addLog("info", "正在启动 Gateway...");
+    addLog("info", t("launching.logStarting"));
 
     if (!isTauri) {
       await new Promise((r) => setTimeout(r, 1200));
@@ -119,7 +118,7 @@ export default function Launching({ manifest, cliCaps, onboardingSummary, logs, 
       if (cancelledRef.current) return;
       if (timerRef.current) clearInterval(timerRef.current);
       setPhase("done");
-      addLog("ok", `Gateway 已就绪 → http://localhost:18789/chat`);
+      addLog("ok", t("launching.logReady", { url: "http://localhost:18789/chat" }));
       onDone({ ...manifest, gateway_port: 18789, gateway_pid: 12345 });
       return;
     }
@@ -136,7 +135,7 @@ export default function Launching({ manifest, cliCaps, onboardingSummary, logs, 
       if (cancelledRef.current) return;
       setPhase("done");
       const finalPort = manifest.gateway_port || 18789;
-      addLog("ok", `Gateway 已就绪 → http://localhost:${finalPort}/chat`);
+      addLog("ok", t("launching.logReady", { url: `http://localhost:${finalPort}/chat` }));
       onDone({
         ...manifest,
         phase: "complete",
@@ -164,23 +163,23 @@ export default function Launching({ manifest, cliCaps, onboardingSummary, logs, 
       
       setPhase("failed");
       setErrorMsg(msg);
-      const guidance = buildGatewayRecoveryTips(msg, code, hint);
+      const guidance = buildGatewayRecoveryTips(msg, code, hint, t);
       setErrorHint(guidance.hint);
       setRecoveryTips(guidance.tips);
       setErrorCode(code);
       setLogPath(logFile);
-      addLog("error", `启动失败: ${msg}`);
+      addLog("error", `${t("launching.logFail")}: ${msg}`);
     }
   }
 
   async function runDiagnose() {
     if (!cliCaps?.has_doctor) {
-      setErrorMsg("当前 OpenClaw 版本不支持 doctor 诊断");
-      setErrorHint("请升级 OpenClaw 后重试");
+      setErrorMsg(t("launching.errorNoDoctor"));
+      setErrorHint(t("launching.errorUpgradeHint"));
       return;
     }
     setPhase("diagnosing");
-    addLog("info", "正在运行 openclaw doctor 诊断...");
+    addLog("info", t("launching.logDiagnosing"));
     
     try {
       const result = await invoke<DoctorResult>("run_doctor");
@@ -188,9 +187,9 @@ export default function Launching({ manifest, cliCaps, onboardingSummary, logs, 
       setLogPath(result.log_path || null);
       
       if (result.passed) {
-        addLog("ok", `诊断通过: ${result.summary}`);
+        addLog("ok", t("launching.logDiagnoseOk", { summary: result.summary }));
       } else {
-        addLog("warn", `诊断发现问题: ${result.summary}`);
+        addLog("warn", t("launching.logDiagnoseWarn", { summary: result.summary }));
         for (const issue of result.issues) {
           addLog(issue.severity === "error" ? "error" : "warn", issue.message);
         }
@@ -199,19 +198,19 @@ export default function Launching({ manifest, cliCaps, onboardingSummary, logs, 
       setPhase("failed");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      addLog("error", `诊断失败: ${msg}`);
+      addLog("error", t("launching.logDiagnoseFail", { msg }));
       setPhase("failed");
     }
   }
 
   async function runFix() {
     if (!cliCaps?.has_doctor) {
-      setErrorMsg("当前 OpenClaw 版本不支持 doctor --fix");
-      setErrorHint("请升级 OpenClaw 后重试");
+      setErrorMsg(t("launching.errorNoDoctorFix"));
+      setErrorHint(t("launching.errorUpgradeHint"));
       return;
     }
     setPhase("fixing");
-    addLog("info", "正在运行 openclaw doctor --fix 修复...");
+    addLog("info", t("launching.logFixRunning"));
     
     try {
       const result = await invoke<CommandResult>("run_doctor_fix");
@@ -219,11 +218,11 @@ export default function Launching({ manifest, cliCaps, onboardingSummary, logs, 
       setLogPath(result.log_path || null);
       
       if (result.success) {
-        addLog("ok", "修复完成，正在重新启动 Gateway...");
+        addLog("ok", t("launching.logFixDone"));
         await new Promise((r) => setTimeout(r, 1000));
         startGateway();
       } else {
-        addLog("error", `修复失败: ${result.message}`);
+        addLog("error", t("launching.logFixFail", { msg: result.message }));
         if (result.hint) {
           addLog("warn", result.hint);
         }
@@ -231,72 +230,15 @@ export default function Launching({ manifest, cliCaps, onboardingSummary, logs, 
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      addLog("error", `修复失败: ${msg}`);
+      addLog("error", t("launching.logFixFail", { msg }));
       setPhase("failed");
     }
-  }
-
-  async function openLogDirectory() {
-    try {
-      const logDir = await invoke<string>("get_log_directory");
-      await invoke("open_folder", { path: logDir });
-    } catch (e) {
-      addLog("error", `打开日志目录失败: ${e}`);
-    }
-  }
-
-  async function openRuntimeLogDirectory() {
-    try {
-      await invoke("open_folder", { path: `${manifest.install_dir}\\logs` });
-    } catch (e) {
-      addLog("error", `打开运行日志目录失败: ${e}`);
-    }
-  }
-
-  async function copyDiagnosticInfo() {
-    const info = [
-      `错误代码: ${errorCode || "未知"}`,
-      `错误信息: ${errorMsg}`,
-      errorHint ? `建议: ${errorHint}` : null,
-      logPath ? `日志文件: ${logPath}` : null,
-      doctorResult ? `诊断结果: ${doctorResult.summary}` : null,
-      doctorResult?.issues.length ? `问题列表:\n${doctorResult.issues.map(i => `  - ${i.message}`).join("\n")}` : null,
-    ].filter(Boolean).join("\n");
-    
-    try {
-      await navigator.clipboard.writeText(info);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      addLog("error", "复制失败");
-    }
-  }
-
-  async function handleStop() {
-    setStopping(true);
-    cancelledRef.current = true;
-    if (timerRef.current) clearInterval(timerRef.current);
-    addLog("warn", "正在停止 Gateway...");
-
-    try {
-      await invoke("kill_gateway_process", {
-        installDir: manifest.install_dir,
-        port: manifest.gateway_port || 18789,
-      });
-      addLog("info", "Gateway 已停止");
-    } catch (e) {
-      addLog("error", `停止失败: ${e}`);
-    }
-
-    setStopping(false);
-    setPhase("failed");
-    setErrorMsg("已手动停止 Gateway");
   }
 
   async function handleRetry() {
     cancelledRef.current = true;
     if (timerRef.current) clearInterval(timerRef.current);
-    addLog("warn", "正在停止旧进程...");
+    addLog("warn", t("launching.logStopping"));
 
     try {
       await invoke("kill_gateway_process", {
@@ -311,260 +253,209 @@ export default function Launching({ manifest, cliCaps, onboardingSummary, logs, 
 
   const chatUrl = `http://localhost:${manifest.gateway_port || 18789}/chat`;
 
-  async function handleOpenChat() {
-    if (openingChat || chatLocked) return;
-    setOpeningChat(true);
-    setChatLocked(true);
-    addLog("info", "正在打开浏览器，请稍候...");
-    try {
-      const result = await invoke<CommandResult>("run_dashboard");
-      if (!result.success) {
-        addLog("warn", "dashboard 打开失败，回退到本地 chat 地址");
-        await invoke("open_url", { url: chatUrl });
-      }
-    } finally {
-      setOpeningChat(false);
-      // 防止连续点击导致重复打开多个页面
-      setTimeout(() => setChatLocked(false), 8000);
-    }
-  }
-
   return (
-    <div className="h-full flex flex-col px-6 py-4 gap-4 overflow-y-auto">
+    <div className="h-full flex flex-col px-6 py-6 gap-6 overflow-y-auto">
       {/* 全局操作遮罩：异步任务进行时防止误触 */}
       {(phase === "starting" || phase === "diagnosing" || phase === "fixing") && (
-        <div className="fixed inset-0 z-40 bg-slate-950/50 backdrop-blur-[1px] pointer-events-auto" />
+        <div className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm pointer-events-auto" />
       )}
-      <div>
-        <h2 className="text-lg font-semibold text-gray-100">启动 Gateway</h2>
-        <p className="text-sm text-gray-400 mt-0.5">
-          启动本地 AI 网关，成功后可点击按钮打开浏览器
+      
+      {/* Header */}
+      <div className="text-center">
+        <h2 className="text-2xl font-semibold text-heading mb-2 tracking-[-0.01em]">{t("step.launching")}</h2>
+        <p className="text-sm text-muted leading-relaxed">
+          {t("launching.subtitle")}
         </p>
-        {onboardingSummary && (
-          <div className="mt-2 bg-gray-900 border border-gray-700 rounded-lg p-3">
-            <p className="text-xs text-gray-400">onboard 执行摘要</p>
-            <p className="text-xs text-gray-200 mt-1">{onboardingSummary.message}</p>
-            {onboardingSummary.command && (
-              <p className="text-[11px] text-gray-500 font-mono mt-1 break-all">
-                {onboardingSummary.command}
-              </p>
-            )}
-            {onboardingSummary.hint && (
-              <p className="text-[11px] text-yellow-500 mt-1">{onboardingSummary.hint}</p>
-            )}
-          </div>
-        )}
       </div>
 
-      <div className="bg-gray-900 rounded-lg border border-gray-700 p-4">
-        {phase === "starting" && (
-          <div className="flex items-center gap-3">
-            <Loader size={20} className="text-brand-400 animate-spin flex-shrink-0" />
-            <div>
-              <p className="text-sm text-gray-200">Gateway 启动中...</p>
-              <p className="text-xs text-gray-500 mt-0.5">已等待 {elapsed}s / 最长等待 90s</p>
-            </div>
-          </div>
-        )}
-        {phase === "diagnosing" && (
-          <div className="flex items-center gap-3">
-            <Stethoscope size={20} className="text-yellow-400 animate-pulse flex-shrink-0" />
-            <div>
-              <p className="text-sm text-gray-200">正在诊断问题...</p>
-              <p className="text-xs text-gray-500 mt-0.5">运行 openclaw doctor</p>
-            </div>
-          </div>
-        )}
-        {phase === "fixing" && (
-          <div className="flex items-center gap-3">
-            <Wrench size={20} className="text-yellow-400 animate-pulse flex-shrink-0" />
-            <div>
-              <p className="text-sm text-gray-200">正在修复问题...</p>
-              <p className="text-xs text-gray-500 mt-0.5">运行 openclaw doctor --fix</p>
-            </div>
-          </div>
-        )}
-        {phase === "done" && (
-          <div className="flex items-center gap-3">
-            <span className="relative flex h-4 w-4 flex-shrink-0">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-brand-400 opacity-60" />
-              <span className="relative inline-flex rounded-full h-4 w-4 bg-brand-500" />
-            </span>
-            <div>
-              <p className="text-sm text-brand-400 font-medium">Gateway 运行中</p>
-              <p className="text-xs text-gray-500 mt-0.5">{chatUrl}</p>
-            </div>
-          </div>
-        )}
-        {phase === "failed" && (
-          <div className="space-y-3">
-            <div className="flex items-start gap-3">
-              <div className="w-4 h-4 rounded-full bg-red-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
-                <span className="w-2 h-2 rounded-full bg-red-500" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm text-red-400 font-medium">启动失败</p>
-                {errorCode && (
-                  <p className="text-xs text-gray-600 font-mono mt-0.5">{errorCode}</p>
-                )}
-                <p className="text-xs text-gray-400 mt-1 break-all">{errorMsg}</p>
-                {errorHint && (
-                  <p className="text-xs text-yellow-500 mt-1">{errorHint}</p>
-                )}
-              </div>
-            </div>
-            {recoveryTips.length > 0 && (
-              <div className="bg-gray-800 rounded-lg p-3">
-                <p className="text-xs text-gray-400 font-medium mb-1">建议操作：</p>
-                <ul className="text-xs text-gray-500 space-y-1 pl-4 list-disc">
-                  {recoveryTips.map((tip, i) => (
-                    <li key={i}>{tip}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            
-            {doctorResult && !doctorResult.passed && (
-              <div className="bg-gray-800 rounded-lg p-3 space-y-2">
-                <p className="text-xs text-gray-400 font-medium">诊断结果:</p>
-                <p className="text-xs text-yellow-400">{doctorResult.summary}</p>
-                {doctorResult.issues.length > 0 && (
-                  <ul className="text-xs text-gray-500 space-y-1 pl-3">
-                    {doctorResult.issues.slice(0, 5).map((issue, i) => (
-                      <li key={i} className={issue.severity === "error" ? "text-red-400" : "text-yellow-500"}>
-                        {issue.message}
-                      </li>
-                    ))}
-                    {doctorResult.issues.length > 5 && (
-                      <li className="text-gray-600">...还有 {doctorResult.issues.length - 5} 个问题</li>
-                    )}
-                  </ul>
-                )}
-              </div>
-            )}
-
-            {fixResult && !fixResult.success && (
-              <div className="bg-gray-800 rounded-lg p-3">
-                <p className="text-xs text-red-400">修复失败: {fixResult.message}</p>
-                {fixResult.hint && (
-                  <p className="text-xs text-yellow-500 mt-1">{fixResult.hint}</p>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="flex-1">
-        <div className="flex items-center justify-between mb-1.5">
-          <span className="text-xs text-gray-500 font-medium uppercase tracking-wide">Gateway 日志</span>
+      {/* Onboarding summary */}
+      {onboardingSummary && (
+        <div className="glass-surface radius-standard p-5 max-w-2xl mx-auto w-full">
+          <h3 className="text-sm font-medium text-heading mb-2">{t("launching.summaryTitle")}</h3>
+          <p className="text-sm text-base mb-2">{onboardingSummary.message}</p>
+          {onboardingSummary.command && (
+            <p className="text-xs text-muted font-mono break-all bg-white/5 p-2 radius-small">
+              {onboardingSummary.command}
+            </p>
+          )}
+          {onboardingSummary.hint && (
+            <p className="text-xs text-yellow-400 mt-2">{onboardingSummary.hint}</p>
+          )}
         </div>
-        <LogScroller logs={logs} maxHeight="h-full min-h-[150px]" />
-      </div>
+      )}
 
-      <div className="flex flex-col gap-3 flex-shrink-0">
-        {phase === "starting" && (
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-gray-500">正在等待 Gateway 响应...</p>
-            <div className="flex gap-2">
-              <button
-                onClick={handleStop}
-                disabled={stopping}
-                className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600
-                  disabled:opacity-50 text-gray-200 text-sm rounded-lg transition-colors"
-              >
-                <Square size={14} />
-                {stopping ? "停止中..." : "停止"}
-              </button>
-              <button
-                onClick={handleRetry}
-                disabled={stopping}
-                className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600
-                  disabled:opacity-50 text-gray-200 text-sm rounded-lg transition-colors"
-              >
-                <RefreshCw size={14} />
-                重试
-              </button>
+      {/* Main status area */}
+      <div className="flex-1 flex flex-col max-w-3xl mx-auto w-full">
+        <div className="glass-surface-darker radius-standard overflow-hidden mb-6 shadow-[0_18px_40px_rgba(0,0,0,0.28)]">
+          {/* Status header */}
+          <div className="p-7 border-b border-white/8">
+            <div className="flex items-center gap-4">
+              <div className="w-16 h-16 rounded-full glass-surface flex items-center justify-center">
+                {phase === "starting" && (
+                  <Loader size={32} className="accent-primary animate-spin" />
+                )}
+                {phase === "diagnosing" && (
+                  <Stethoscope size={32} className="text-yellow-400 animate-pulse" />
+                )}
+                {phase === "fixing" && (
+                  <Wrench size={32} className="text-yellow-400 animate-pulse" />
+                )}
+                {phase === "done" && (
+                  <div className="relative">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full accent-primary-bg opacity-60" />
+                    <span className="relative inline-flex rounded-full w-8 h-8 accent-primary-bg" />
+                  </div>
+                )}
+                {phase === "failed" && (
+                  <span className="text-3xl text-red-400">✗</span>
+                )}
+              </div>
+              
+              <div>
+                <h3 className="text-xl font-semibold text-heading tracking-[-0.01em]">
+                  {phase === "starting" && t("launching.phase.starting")}
+                  {phase === "diagnosing" && t("launching.phase.diagnosing")}
+                  {phase === "fixing" && t("launching.phase.fixing")}
+                  {phase === "done" && t("launching.phase.done")}
+                  {phase === "failed" && t("launching.phase.failed")}
+                </h3>
+                <p className="text-sm text-muted mt-1">
+                  {phase === "starting" && t("launching.elapsed", { seconds: elapsed })}
+                  {phase === "diagnosing" && t("launching.diagnoseCmd")}
+                  {phase === "fixing" && t("launching.fixCmd")}
+                  {phase === "done" && chatUrl}
+                  {phase === "failed" && t("launching.failedHint")}
+                </p>
+              </div>
             </div>
           </div>
-        )}
-        {(phase === "diagnosing" || phase === "fixing") && (
-          <div className="flex items-center justify-center">
-            <p className="text-sm text-gray-500">请稍候...</p>
+
+          {/* Error details */}
+          {phase === "failed" && (
+            <div className="p-6 border-b border-white/5">
+              <div className="glass-surface radius-small p-4 border border-red-500/30 bg-red-500/5">
+                <div className="flex items-start gap-3">
+                  <div className="w-5 h-5 rounded-full bg-red-500/20 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <span className="w-2 h-2 rounded-full bg-red-500" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm text-red-400 font-medium">{t("launching.failedTitle")}</p>
+                    {errorCode && (
+                      <p className="text-xs text-red-300/60 font-mono mt-1">{errorCode}</p>
+                    )}
+                    <p className="text-xs text-red-300/80 mt-1 break-all">{errorMsg}</p>
+                    {errorHint && (
+                      <p className="text-xs text-yellow-400 mt-2">{errorHint}</p>
+                    )}
+                  </div>
+                </div>
+                
+                {recoveryTips.length > 0 && (
+                  <div className="mt-4 glass-surface-darker radius-small p-3">
+                    <p className="text-xs text-yellow-300 font-medium mb-2">{t("launching.suggestions")}</p>
+                    <ul className="text-xs text-yellow-400/80 space-y-1 pl-4 list-disc">
+                      {recoveryTips.map((tip, i) => (
+                        <li key={i}>{tip}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Log area */}
+          <div className="p-4">
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full accent-primary-bg"></div>
+                <span className="text-sm font-medium text-heading">{t("launching.logTitle")}</span>
+              </div>
+              <span className="text-xs text-muted">{t("installing.logLines", { count: logs.length })}</span>
+            </div>
+            <div className="h-32 overflow-y-auto">
+              <LogScroller logs={logs} maxHeight="h-full" />
+            </div>
           </div>
-        )}
-        {phase === "failed" && (
-          <>
-            <div className="flex items-center justify-between">
+        </div>
+
+        {/* Action buttons */}
+        <div className="flex items-center justify-between min-h-11">
+          {phase === "starting" && (
+            <>
+              <div className="flex items-center gap-3 text-muted">
+                <Loader size={16} className="accent-primary animate-spin" />
+                <span className="text-sm">{t("launching.waiting")}</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleRetry()}
+                  disabled={stopping}
+                  className="flex items-center gap-2 px-4 h-10 glass-surface hover:bg-white/10 text-base radius-small transition-colors disabled:opacity-50"
+                >
+                  <Square size={14} />
+                  {stopping ? t("launching.stopping") : t("manager.stop")}
+                </button>
+                <button
+                  onClick={handleRetry}
+                  disabled={stopping}
+                  className="flex items-center gap-2 px-4 h-10 glass-surface hover:bg-white/10 text-base radius-small transition-colors disabled:opacity-50"
+                >
+                  <RefreshCw size={14} />
+                  {t("common.retry")}
+                </button>
+              </div>
+            </>
+          )}
+
+          {(phase === "diagnosing" || phase === "fixing") && (
+            <div className="flex items-center gap-3 text-muted mx-auto">
+              <Loader size={16} className="text-yellow-400 animate-spin" />
+              <span className="text-sm">{t("common.loading")}</span>
+            </div>
+          )}
+
+          {phase === "failed" && (
+            <>
               <div className="flex gap-2">
                 <button
                   onClick={runDiagnose}
                   disabled={!cliCaps?.has_doctor}
-                  className="flex items-center gap-2 px-3 py-2 bg-yellow-900/30 hover:bg-yellow-800/40 text-yellow-400 text-sm rounded-lg transition-colors"
+                  className="flex items-center gap-2 px-3 h-10 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-400 text-sm radius-small transition-colors disabled:opacity-50"
                 >
                   <Stethoscope size={14} />
-                  诊断问题
+                  {t("manager.runDiagnose")}
                 </button>
                 <button
                   onClick={runFix}
                   disabled={!cliCaps?.has_doctor}
-                  className="flex items-center gap-2 px-3 py-2 bg-yellow-900/30 hover:bg-yellow-800/40 text-yellow-400 text-sm rounded-lg transition-colors"
+                  className="flex items-center gap-2 px-3 h-10 bg-yellow-500/20 hover:bg-yellow-500/30 text-yellow-400 text-sm radius-small transition-colors disabled:opacity-50"
                 >
                   <Wrench size={14} />
-                  一键修复
+                  {t("manager.runFix")}
                 </button>
               </div>
               <button
                 onClick={handleRetry}
-                className="flex items-center gap-2 px-4 py-2 bg-brand-500 hover:bg-brand-600 text-gray-950 font-semibold text-sm rounded-lg transition-colors"
+                className="flex items-center gap-2 px-6 h-10 accent-primary-bg text-black font-semibold radius-small accent-primary-glow transition-all hover:scale-[1.03]"
               >
                 <RefreshCw size={14} />
-                重新启动
+                {t("manager.restart")}
+              </button>
+            </>
+          )}
+
+          {phase === "done" && (
+            <div className="flex items-center justify-center w-full">
+              <button
+                onClick={() => onDone(manifest)}
+                className="px-8 h-11 accent-primary-bg text-black font-semibold radius-small accent-primary-glow transition-all hover:scale-[1.03]"
+              >
+                {t("common.next")} →
               </button>
             </div>
-            <div className="flex items-center justify-between border-t border-gray-800 pt-3">
-              <div className="flex gap-2">
-                <button
-                  onClick={openLogDirectory}
-                  className="flex items-center gap-1.5 px-2 py-1.5 text-gray-500 hover:text-gray-300 text-xs rounded transition-colors"
-                >
-                  <FolderOpen size={12} />
-                  查看 installer 日志
-                </button>
-                <button
-                  onClick={openRuntimeLogDirectory}
-                  className="flex items-center gap-1.5 px-2 py-1.5 text-gray-500 hover:text-gray-300 text-xs rounded transition-colors"
-                >
-                  <FolderOpen size={12} />
-                  查看运行日志
-                </button>
-                <button
-                  onClick={copyDiagnosticInfo}
-                  className="flex items-center gap-1.5 px-2 py-1.5 text-gray-500 hover:text-gray-300 text-xs rounded transition-colors"
-                >
-                  {copied ? <CheckCircle size={12} className="text-green-400" /> : <Copy size={12} />}
-                  {copied ? "已复制" : "复制诊断信息"}
-                </button>
-              </div>
-              <p className="text-xs text-gray-600">
-                如问题持续，请查看日志或联系支持
-              </p>
-            </div>
-          </>
-        )}
-        {phase === "done" && (
-          <div className="flex items-center justify-between">
-            <p className="text-sm text-brand-400">安装完成！桌面快捷方式已创建</p>
-            <button
-              onClick={handleOpenChat}
-              disabled={openingChat || chatLocked}
-              className="flex items-center gap-2 px-6 py-2 bg-brand-500 hover:bg-brand-600 disabled:bg-gray-700 disabled:text-gray-400 text-gray-950 font-semibold text-sm rounded-lg transition-colors"
-            >
-              {openingChat ? <Loader size={14} className="animate-spin" /> : <ExternalLink size={14} />}
-              {openingChat ? "打开中..." : chatLocked ? "请稍候..." : "打开 OpenClaw"}
-            </button>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

@@ -1,0 +1,17 @@
+﻿{
+    "profile":  "ChineseUserProfile",
+    "createdAt":  "2026-03-11T23:53:22",
+    "sessionRoot":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime-check\\session-ChineseUserProfile-20260311-235322",
+    "binDir":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime-check\\session-ChineseUserProfile-20260311-235322\\bin",
+    "profileRoot":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime-check\\session-ChineseUserProfile-20260311-235322\\娴嬭瘯鐢ㄦ埛",
+    "appData":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime-check\\session-ChineseUserProfile-20260311-235322\\娴嬭瘯鐢ㄦ埛\\AppData\\Roaming",
+    "localAppData":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime-check\\session-ChineseUserProfile-20260311-235322\\娴嬭瘯鐢ㄦ埛\\AppData\\Local",
+    "appDataNpm":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime-check\\session-ChineseUserProfile-20260311-235322\\娴嬭瘯鐢ㄦ埛\\AppData\\Roaming\\npm",
+    "evidenceDir":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime-check\\session-ChineseUserProfile-20260311-235322\\evidence",
+    "installDir":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime-check\\session-ChineseUserProfile-20260311-235322\\娴嬭瘯鐢ㄦ埛\\AppData\\Local\\OpenClaw",
+    "portBlockerPid":  null,
+    "networkRestricted":  false,
+    "npmMode":  "ok",
+    "npmPrefix":  "D:\\CODE\\openclawInstaller\\openclaw_installer_windows\\tests\\windows-env\\runtime-check\\session-ChineseUserProfile-20260311-235322\\娴嬭瘯鐢ㄦ埛\\AppData\\Roaming\\npm",
+    "nodeMode":  "ready"
+}

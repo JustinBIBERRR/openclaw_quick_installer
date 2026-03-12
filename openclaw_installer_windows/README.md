@@ -1,111 +1,87 @@
-# OpenClaw 一键安装器
+# 🦞 OpenClaw Windows Quick Installer
 
-OpenClaw 一键安装器是一款桌面应用，帮你快速完成 OpenClaw CLI 的安装、配置和日常管理。
+> **让 AI Agent 像安装游戏一样简单 | 专为 Windows 用户打造的 OpenClaw 一键部署与管理工具**
 
-![OpenClaw 一键安装器](README_assets/logo.png)
+[![GitHub stars](https://img.shields.io/github/stars/JustinBIBERRR/openclaw_quick_installer?style=social)](https://github.com/JustinBIBERRR/openclaw_quick_installer)
+[![Platform](https://img.shields.io/badge/Platform-Windows-blue)](https://github.com/JustinBIBERRR/openclaw_quick_installer)
+[![License](https://img.shields.io/badge/License-MIT-green)](https://opensource.org/licenses/MIT)
 
-## 能做什么
-
-- **系统环境检测**：自动检查是否满足安装条件（权限、内存等）
-- **一键安装 OpenClaw CLI**：自动安装 Node.js、OpenClaw 及依赖
-- **API 与飞书配置**：配置 API 密钥、模型，以及飞书机器人（可选）
-- **Gateway 服务管理**：启动/停止 Gateway，查看状态与日志
-
-## 首次使用流程
-
-安装器首次启动会按下面顺序引导你完成环境搭建：
-
-```
-环境预检 → 安装 OpenClaw → 配置参数 → 启动 Gateway → Chat 页面
-```
-
-## 流程指引
-
-### 第一步：环境预检
-
-进行安装前的环境检查，确保本机满足运行条件：
-
-- **管理员权限检查**：安装与配置需要管理员权限，不足时可按提示一键提权
-- **内存检查**：检查系统内存是否充足（推荐 ≥8GB）
-- **网络联通检查**：验证网络可用，便于后续下载依赖与访问 API
-
-![环境预检](README_assets/env_check.png)
-
-### 第二步：安装 OpenClaw
-
-自动下载并安装 OpenClaw 运行环境与 CLI,安装过程会唤起powershell预览实时进度：
-不同用户环节耗时不一,预计5min以内完成安装
-- 若未检测到 Node.js，会先安装 Node.js 运行环境（2-3min）
-- 安装 OpenClaw CLI 及必要依赖（1-2min）
-- 界面会实时显示安装进度与日志
-
-![安装 OpenClaw](README_assets/openclaw_install.png)
-![安装 OpenClaw 成功](README_assets/openclaw_install_success.png)
-
-### 第三步：配置参数
-
-在此步骤完成 OpenClaw 的核心配置：
-
-- **飞书信息**：配置飞书机器人（App ID、App Secret 等）
-- **模型信息**：选择 API 提供商（Anthropic、OpenAI、DeepSeek 或自定义），填写 API 密钥并验证，选择模型
-- **Skills（可以跳过）**：选择或配置需要使用的技能
-- **Hooks（可以跳过）**：选择或配置需要使用的技能
-
-![配置参数](README_assets/config.png)
-
-### 第四步：等待 Gateway 启动
-
-应用当前配置并启动 OpenClaw Gateway 服务：
-
-- 自动应用已保存的配置
-- 启动 Gateway 并检测端口占用
-- 校验服务是否正常响应
-
-### 第五步：Chat 启动页面
-
-Gateway 启动成功后，可进入 Chat 页面开始使用：
-
-- 在 Chat 页面与 OpenClaw 对话、调用已配置的模型与技能
-- 管理界面中也可随时查看 Gateway 状态、修改配置或查看日志
-
-![Chat 页面](README_assets/chat_page.png)
-
-网关会自动启动，会出现新的powershell弹窗，保留该poewershell弹窗开启，即可确保网关gateway运行
-![成功启动网关](README_assets/gateway_success.png)
-
-### 第六步：使用OpenClaw页面
-
-进入 Chat 页面使用OpenClaw：
-
-- 可点击下方new开启新的对话
-![对话](README_assets/page.png)
-
-
-## 日常使用
-
-- 若之前已完成安装与配置，再次打开安装器会直接进入**第五步 Chat 启动页面**。
-- 若安装曾中断或配置不完整，安装器会自动识别并从中断步骤或缺失配置处继续。
-
-## 故障排除
-
-| 问题 | 建议 |
-|------|------|
-| 权限不足 | 使用界面中的「一键提权」，或以管理员身份运行程序 |
-| 网络异常 | 检查防火墙与网络连接 |
-| 端口冲突 | Gateway 默认端口 18789，若有冲突会自动尝试其他端口 |
-| 配置丢失 | 重新打开安装器，按向导补充或重新配置 |
-
-安装器内提供**诊断工具**与**日志查看**，便于排查 OpenClaw 环境与运行问题。
-
-## 版本与许可
-
-- 版本更新说明见 [CHANGELOG.md](./CHANGELOG.md)
-- 许可信息见项目中的 LICENSE 文件
-
-## 规划
-1、样式优化
-2、体验交互优化（loading等待、二次打开检测）
-3、skills和hooks库拓展，模型选择拓展。可搜索search
 ---
 
-*开发者文档（技术栈、构建、状态与路由逻辑等）见 [README_DEVELOPER.md](./README_DEVELOPER.md)。*
+## 💡 为什么选择本工具？
+
+部署 OpenClaw AI 框架通常需要面对复杂的 Node.js 环境、Docker 配置和环境变量。**OpenClaw 一键安装器** 将这些痛苦化于无形：
+
+| 维度 | 传统手动部署 | OpenClaw 一键安装器 |
+| :--- | :--- | :--- |
+| **部署耗时** | 60+ 分钟（易卡在环境报错） | **< 5 分钟 (全自动流程)** |
+| **操作门槛** | 熟悉 PowerShell/Docker 命令 | **零基础图形化点击** |
+| **配置管理** | 手写 YAML 配置文件 | **可视化表单与连接验证** |
+| **维护成本** | 手动查进程、翻目录看日志 | **一键启动/停止，实时监控** |
+
+---
+
+## 🛡️ 安全与透明度声明
+
+由于本项目尚未申请付费的数字签名，且涉及环境修改（如提权、写环境变量），部分引擎可能会出现误报。
+* **VirusTotal 跑分：** [点击查看在线报告](https://www.virustotal.com/gui/file/1b97f52a5c25897ee126a541554ef94e0b13c7fb26254974e5e336d163f6fd93/detection ) 
+* **安全承诺：** 代码完全开源，所有安装行为均在唤起的原生 PowerShell 窗口中公开展示，无任何后门或恶意代码。
+* **误报说明：** Bkav Pro 或 Trapmine 提示的 `AIDetectMalware` 属于典型的启发式虚警，请放心使用。
+
+---
+
+## ✨ 核心功能
+
+- **🚀 零基础上手**：环境预检、Node.js 安装、CLI 部署全自动完成。
+- **🖥️ 可视化管理**：带 GUI 界面，一键控制 Gateway 服务的启停。
+- **⚙️ 引导式配置**：支持 Anthropic, OpenAI, DeepSeek 等主流模型及飞书机器人一键配置。
+- **🔍 智能诊断**：内置端口冲突检测与日志查看工具，快速排查运行异常。
+- **🧹 优雅卸载**：提供“一键卸载”功能，干净清理环境，支持二次确认防止误删。
+
+---
+
+## 🚀 极速安装指引
+
+安装器将通过以下直观向导引导您开启 AI 助手之旅：
+
+### 1. 欢迎与预检
+首先进入欢迎页，系统会自动进行管理员权限、内存（推荐 ≥8GB）及网络联通性检查，确保安装万无一失。
+![环境预检](openclaw_installer_windows/README_assets/systemCheck.png)
+
+### 2. 一键自动化部署
+自动下载并部署 OpenClaw 运行环境。安装过程会唤起 PowerShell 窗口预览进度，让每一步都清晰可见。
+![安装中](openclaw_installer_windows/README_assets/installing.png)
+
+### 3. 可视化参数配置
+无需修改配置文件！直接在 UI 中填写飞书信息及模型 API Key，并支持一键连接验证。
+![配置参数](openclaw_installer_windows/README_assets/config_models.png)
+
+### 4. 启动与运行
+确认配置后，系统会自动启动 Gateway。保持弹出的网关窗口开启，即可开始使用 OpenClaw。
+![启动网关](openclaw_installer_windows/README_assets/open_gateway_window.png)
+
+---
+
+## 🛠️ 日常管理与维护
+
+若之前已完成安装，再次打开将直接进入**配置/管理页面**。您可以随时修改模型参数、查看实时日志或诊断系统状态。
+![管理页面](openclaw_installer_windows/README_assets/manager.png)
+
+---
+
+## 🚧 路线图 (Roadmap)
+
+- [ ] 🎨 **UI/UX 全面重构**：引入暗黑模式与更丝滑的交互体验。
+- [ ] 📦 **插件超市**：支持 Skills 和 Hooks 库的在线搜索与一键扩展。
+- [ ] ⚡ **模型市场**：增加对更多本地及在线模型服务商的预设支持。
+- [ ] 📈 **自动更新**：安装器本身的一键静默升级功能。
+
+---
+
+## 💬 反馈与支持
+
+- **提交 Issue**：遇到任何“未响应”或安装失败，请点击界面中的“日志查看”并提交 Issue。
+- **开源协议**：本项目基于 [MIT License](./LICENSE) 开源。
+
+---
+*让 AI Agent 的力量触手可及。如果本项目对你有帮助，请给一个 **Star** ⭐️ 支持我们！*

@@ -1,0 +1,19 @@
+{
+  "id": "WinHomeNoHyperV",
+  "description": "Windows Home 无 Hyper-V（验证非依赖）",
+  "simulate": {
+    "nodeMode": "ready",
+    "wingetAvailable": true,
+    "hideGit": true,
+    "hideBash": true,
+    "hideDocker": true,
+    "occupyPort18789": false,
+    "brokenOpenclawConfig": false,
+    "installDirMode": "default",
+    "networkRestricted": false
+  },
+  "expected": {
+    "installShouldPass": true,
+    "riskLevel": "P2"
+  }
+}

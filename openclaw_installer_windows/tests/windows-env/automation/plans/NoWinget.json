@@ -1,0 +1,14 @@
+{
+  "description": "启动 NoWinget 场景并触发安装，让 UI 进入失败分支",
+  "actions": [
+    { "type": "wait_window", "timeoutSec": 20 },
+    { "type": "screenshot", "name": "nowinget-before-start.png" },
+    { "type": "activate" },
+    { "type": "sleep", "ms": 2500 },
+    { "type": "keys", "keys": "{TAB}" },
+    { "type": "sleep", "ms": 400 },
+    { "type": "keys", "keys": "{ENTER}" },
+    { "type": "sleep", "ms": 3000 },
+    { "type": "screenshot", "name": "nowinget-after-start.png" }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "id": "ChineseInstallDir",
+  "description": "安装目录包含中文字符",
+  "simulate": {
+    "nodeMode": "ready",
+    "wingetAvailable": true,
+    "hideGit": true,
+    "hideBash": true,
+    "hideDocker": true,
+    "occupyPort18789": false,
+    "brokenOpenclawConfig": false,
+    "installDirMode": "chinese",
+    "networkRestricted": false
+  },
+  "expected": {
+    "installShouldPass": false,
+    "riskLevel": "P0"
+  }
+}

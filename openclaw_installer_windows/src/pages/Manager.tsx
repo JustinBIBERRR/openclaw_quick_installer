@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
-  ExternalLink, RefreshCw, Square, Play, FolderOpen,
+  ExternalLink, RefreshCw, Square, FolderOpen,
   Trash2, ChevronRight, Loader, FileEdit, Stethoscope, Wrench,
   AlertTriangle, X
 } from "lucide-react";
@@ -9,11 +9,12 @@ import StatusDot from "../components/StatusDot";
 import TitleBar from "../components/TitleBar";
 import UnifiedConfigPanel from "../components/UnifiedConfigPanel";
 import type { AppManifest, GatewayStatus, DoctorResult, CommandResult, CliCapabilities, CheckEnvironmentResult } from "../types";
+import { useI18n } from "../i18n/useI18n";
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-const BTN_PRIMARY = "h-10 px-4 inline-flex items-center justify-center gap-2 bg-brand-500 hover:bg-brand-600 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-sm font-semibold rounded-xl transition-colors";
-const BTN_SECONDARY = "h-10 px-4 inline-flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 disabled:opacity-50 text-slate-200 text-sm rounded-xl transition-colors";
-const BTN_DANGER = "h-10 px-4 inline-flex items-center justify-center gap-2 bg-red-900/40 hover:bg-red-800/50 border border-red-800/50 disabled:opacity-50 text-red-300 text-sm rounded-xl transition-colors";
+const BTN_PRIMARY = "h-9 sm:h-10 px-3 sm:px-4 inline-flex items-center justify-center gap-1.5 sm:gap-2 bg-brand-500 hover:bg-brand-600 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 text-xs sm:text-sm font-semibold rounded-lg sm:rounded-xl transition-all hover:shadow-[0_0_16px_rgba(16,185,129,0.3)] sm:hover:shadow-[0_0_18px_rgba(16,185,129,0.35)]";
+const BTN_SECONDARY = "h-9 sm:h-10 px-3 sm:px-4 inline-flex items-center justify-center gap-1.5 sm:gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 disabled:opacity-50 text-slate-200 text-xs sm:text-sm rounded-lg sm:rounded-xl transition-colors";
+const BTN_DANGER = "h-9 sm:h-10 px-3 sm:px-4 inline-flex items-center justify-center gap-1.5 sm:gap-2 bg-red-900/40 hover:bg-red-800/50 border border-red-800/50 disabled:opacity-50 text-red-300 text-xs sm:text-sm rounded-lg sm:rounded-xl transition-colors";
 
 interface Props {
   manifest: AppManifest;
@@ -24,24 +25,29 @@ interface Props {
   autoOpenConfig?: boolean;
 }
 
-function buildManagerRecoveryHint(message: string, backendHint: string | null): string | null {
+function buildManagerRecoveryHint(
+  message: string,
+  backendHint: string | null,
+  t: (key: string) => string
+): string | null {
   const lower = `${message} ${backendHint || ""}`.toLowerCase();
   if (lower.includes("too many failed authentication attempts") || lower.includes("authentication attempts")) {
-    return "浏览器可能缓存了旧 token。请先重启 Gateway，并使用无痕模式重新打开 Chat。";
+    return t("manager.recovery.authCache");
   }
   if (lower.includes("no api key found") || lower.includes("auth-profiles")) {
-    return backendHint || "未找到可用 API Key。请先运行诊断/修复，再检查模型配置。";
+    return backendHint || t("manager.recovery.noApiKey");
   }
   if (lower.includes("gateway.mode") || lower.includes("mode local") || lower.includes("unconfigured")) {
-    return backendHint || "网关模式或配置未就绪。建议先运行诊断与修复。";
+    return backendHint || t("manager.recovery.gatewayMode");
   }
   if (lower.includes("cmd_not_found") || lower.includes("找不到 openclaw")) {
-    return backendHint || "系统未发现 openclaw 命令。请重新打开安装器并检查 PATH。";
+    return backendHint || t("manager.recovery.cmdNotFound");
   }
   return backendHint;
 }
 
 export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChange, onManifestChange, autoOpenConfig = false }: Props) {
+  const { t } = useI18n();
   const [initialChecking, setInitialChecking] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
@@ -122,7 +128,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
         const result = await invoke<CommandResult>("start_gateway_bg", { installDir: manifest.install_dir, port });
         if (!result.success) {
           setLastError(result.message);
-          setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint));
+          setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint, t));
           onStatusChange("stopped");
           return;
         }
@@ -147,7 +153,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
     });
     if (!result.success) {
       setLastError(result.message);
-      setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint));
+      setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint, t));
       onStatusChange("stopped");
       return false;
     }
@@ -170,16 +176,16 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
       retries--;
     }
 
-    setLastError("Gateway 启动失败，请检查配置或运行诊断");
-    setLastErrorHint("可能是配置文件问题或端口被占用");
+    setLastError(t("manager.errorStartFailed"));
+    setLastErrorHint(t("manager.errorStartHint"));
     onStatusChange("stopped");
     return false;
   }
 
   async function runDiagnose() {
     if (!cliCaps?.has_doctor) {
-      setLastError("当前 OpenClaw 版本不支持 doctor 诊断");
-      setLastErrorHint("请升级 OpenClaw 后重试");
+      setLastError(t("manager.errorNoDoctor"));
+      setLastErrorHint(t("manager.errorUpgradeHint"));
       return;
     }
     setActionLoading("diagnose");
@@ -189,7 +195,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
       setDoctorResult(result);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setLastError(`诊断失败: ${msg}`);
+      setLastError(t("manager.errorDiagnose", { msg }));
     } finally {
       setActionLoading(null);
     }
@@ -197,8 +203,8 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
 
   async function runFix() {
     if (!cliCaps?.has_doctor) {
-      setLastError("当前 OpenClaw 版本不支持 doctor --fix");
-      setLastErrorHint("请升级 OpenClaw 后重试");
+      setLastError(t("manager.errorNoDoctorFix"));
+      setLastErrorHint(t("manager.errorUpgradeHint"));
       return;
     }
     setActionLoading("fix");
@@ -211,12 +217,12 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
         const newResult = await invoke<DoctorResult>("run_doctor");
         setDoctorResult(newResult);
       } else {
-        setLastError(`修复失败: ${result.message}`);
+        setLastError(t("manager.errorFixFailed", { msg: result.message }));
         setLastErrorHint(result.hint || null);
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setLastError(`修复失败: ${msg}`);
+      setLastError(t("manager.errorFixFailed", { msg }));
     } finally {
       setActionLoading(null);
     }
@@ -247,14 +253,14 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
       const result = await invoke<CommandResult>("run_dashboard");
       if (!result.success) {
         setLastError(result.message);
-        setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint || null));
+        setLastErrorHint(buildManagerRecoveryHint(result.message, result.hint || null, t));
         // dashboard 失败时兜底
         await invoke("open_url", { url: chatUrl });
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLastError(msg);
-      setLastErrorHint(buildManagerRecoveryHint(msg, null));
+      setLastErrorHint(buildManagerRecoveryHint(msg, null, t));
     } finally {
       setOpeningChat(false);
       setTimeout(() => setChatLocked(false), 8000);
@@ -274,7 +280,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setLastError(msg);
-      setLastErrorHint(buildManagerRecoveryHint(msg, null));
+      setLastErrorHint(buildManagerRecoveryHint(msg, null, t));
       onStatusChange("stopped");
     } finally {
       setActionLoading(null);
@@ -297,28 +303,28 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
     anthropic: "Anthropic Claude",
     openai: "OpenAI GPT",
     deepseek: "DeepSeek",
-    custom: "自定义 API",
-    skip: "未配置",
+    custom: "Custom API",
+    skip: t("manager.notConfigured"),
   };
 
   const gatewayStatusLabel: Record<GatewayStatus, string> = {
-    running: "运行中",
-    stopped: "未启动",
-    checking: "检测中",
-    starting: "启动中",
+    running: t("manager.status.running"),
+    stopped: t("manager.status.stopped"),
+    checking: t("manager.status.checking"),
+    starting: t("manager.status.starting"),
   };
 
   const configMissing = !manifest.api_key_configured;
 
   if (initialChecking) {
     return (
-      <div className="h-screen flex flex-col bg-slate-950">
-        <TitleBar title="OpenClaw Manager" />
-        <div className="flex-1 flex items-center justify-center px-6">
-          <div className="flex flex-col items-center gap-3">
-            <Loader size={24} className="animate-spin text-brand-400" />
-            <p className="text-sm text-slate-300">正在检测用户本地 openclaw 配置...</p>
-            <p className="text-xs text-slate-500">检测完成后将自动回填 Manager 页面</p>
+      <div className="h-screen flex flex-col" style={{ background: "#060B14" }}>
+        <TitleBar title={t("app.title.manager")} />
+        <div className="flex-1 flex items-center justify-center px-4 sm:px-6">
+          <div className="flex flex-col items-center gap-2 sm:gap-3">
+            <Loader size={20} className="animate-spin text-brand-400 sm:w-6 sm:h-6" />
+            <p className="text-xs sm:text-sm text-slate-300">{t("manager.initialCheckingTitle")}</p>
+            <p className="text-[0.7rem] sm:text-xs text-slate-500">{t("manager.initialCheckingDesc")}</p>
           </div>
         </div>
       </div>
@@ -326,21 +332,21 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
   }
 
   return (
-    <div className="h-screen flex flex-col bg-slate-950">
-      <TitleBar title="OpenClaw Manager" />
+    <div className="h-screen flex flex-col" style={{ background: "#060B14" }}>
+      <TitleBar title={t("app.title.manager")} />
 
-      <div className="flex-1 overflow-y-auto px-6 py-6">
-        <div className="w-full max-w-6xl mx-auto flex flex-col gap-4">
-          <div className="rounded-2xl border border-slate-800 bg-gradient-to-br from-slate-900 to-slate-900/60 p-6">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="text-xs uppercase tracking-wide text-slate-500">Workspace Overview</p>
-                <h2 className="text-xl font-semibold text-slate-100 mt-1">OpenClaw 控制台</h2>
-                <p className="text-sm text-slate-400 mt-1">
-                  {configMissing ? "检测到尚未完成配置，建议先完成综合配置再启动 Chat。" : "可直接启动并打开 Chat，或按需修改配置。"}
+      <div className="flex-1 overflow-y-auto px-3 sm:px-6 py-3 sm:py-6">
+        <div className="w-full max-w-6xl mx-auto flex flex-col gap-3 sm:gap-4">
+          <div className="glass-surface radius-standard p-4 sm:p-6 shadow-[0_12px_36px_rgba(0,0,0,0.24)] sm:shadow-[0_20px_50px_rgba(0,0,0,0.28)]">
+            <div className="flex flex-col sm:flex-row items-start justify-between gap-3 sm:gap-4">
+              <div className="flex-1 min-w-0">
+                <p className="text-[0.7rem] sm:text-xs uppercase tracking-wide text-slate-500">{t("manager.workspaceOverview")}</p>
+                <h2 className="text-lg sm:text-xl font-semibold text-slate-100 mt-0.5 sm:mt-1">{t("manager.title")}</h2>
+                <p className="text-xs sm:text-sm text-slate-400 mt-0.5 sm:mt-1">
+                  {configMissing ? t("manager.subtitleNeedConfig") : t("manager.subtitleReady")}
                 </p>
               </div>
-              <span className={`px-3 py-1.5 text-xs rounded-full border ${
+              <span className={`px-2.5 sm:px-3 py-1 sm:py-1.5 text-[0.7rem] sm:text-xs rounded-full border flex-shrink-0 ${
                 gatewayStatus === "running"
                   ? "border-emerald-400/40 text-emerald-200 bg-emerald-500/15"
                   : gatewayStatus === "starting"
@@ -350,72 +356,72 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
                 Gateway {gatewayStatusLabel[gatewayStatus]}
               </span>
             </div>
-            <div className="mt-4 grid grid-cols-1 md:grid-cols-3 gap-3">
-              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3.5">
-                <p className="text-xs text-slate-500">Chat 地址</p>
-                <p className="text-sm text-slate-200 font-mono mt-1 break-all">{chatUrl}</p>
+            <div className="mt-3 sm:mt-4 grid grid-cols-1 md:grid-cols-3 gap-2 sm:gap-3">
+              <div className="rounded-lg sm:rounded-xl border border-slate-800 bg-slate-900/70 p-2.5 sm:p-3.5">
+                <p className="text-[0.7rem] sm:text-xs text-slate-500">{t("manager.chatAddress")}</p>
+                <p className="text-xs sm:text-sm text-slate-200 font-mono mt-0.5 sm:mt-1 break-all">{chatUrl}</p>
               </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3.5">
-                <p className="text-xs text-slate-500">API 状态</p>
-                <p className={`text-sm mt-1 ${configMissing ? "text-yellow-400" : "text-slate-200"}`}>
-                  {configMissing ? "未配置（建议先配置）" : "已配置"}
+              <div className="rounded-lg sm:rounded-xl border border-slate-800 bg-slate-900/70 p-2.5 sm:p-3.5">
+                <p className="text-[0.7rem] sm:text-xs text-slate-500">{t("manager.apiState")}</p>
+                <p className={`text-xs sm:text-sm mt-0.5 sm:mt-1 ${configMissing ? "text-yellow-400" : "text-slate-200"}`}>
+                  {configMissing ? t("manager.configMissingSuggested") : t("manager.configured")}
                 </p>
               </div>
-              <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-3.5">
-                <p className="text-xs text-slate-500">安装目录</p>
-                <p className="text-sm text-slate-300 mt-1 truncate">{manifest.install_dir}</p>
+              <div className="rounded-lg sm:rounded-xl border border-slate-800 bg-slate-900/70 p-2.5 sm:p-3.5">
+                <p className="text-[0.7rem] sm:text-xs text-slate-500">{t("manager.installDir")}</p>
+                <p className="text-xs sm:text-sm text-slate-300 mt-0.5 sm:mt-1 truncate">{manifest.install_dir}</p>
               </div>
             </div>
-            <div className="mt-4 flex flex-wrap gap-2.5">
+            <div className="mt-3 sm:mt-4 flex flex-wrap gap-2">
               <button
                 onClick={() => setShowConfigPanel(true)}
-              className={`flex items-center gap-2 px-4 py-2.5 text-sm rounded-xl transition-all
+              className={`flex items-center gap-1.5 sm:gap-2 px-3 sm:px-4 py-2 sm:py-2.5 text-xs sm:text-sm rounded-lg sm:rounded-xl transition-all
                 ${configMissing
                   ? "bg-brand-500/15 hover:bg-brand-500/20 border border-brand-400/60 text-brand-200 shadow-[0_0_0_1px_rgba(16,185,129,0.25)]"
                   : "bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200"
                 }`}
               >
-                <FileEdit size={14} />
-              {configMissing ? "先完成综合配置" : "综合配置"}
+                <FileEdit size={13} className="sm:w-[14px] sm:h-[14px]" />
+              {configMissing ? t("manager.quickConfig") : t("manager.quickConfig")}
               </button>
               <button
                 onClick={runDiagnose}
                 disabled={actionLoading !== null || !cliCaps?.has_doctor}
               className={BTN_SECONDARY}
               >
-                <Stethoscope size={14} />
-                诊断
+                <Stethoscope size={13} className="sm:w-[14px] sm:h-[14px]" />
+                {t("manager.runDiagnose")}
               </button>
             </div>
           </div>
 
         {/* 状态卡片 */}
-          <div className="bg-gradient-to-b from-slate-900 to-slate-900/70 rounded-2xl border border-slate-800 p-6 shadow-sm">
-          <div className="flex items-center justify-between mb-4">
+          <div className="glass-surface radius-standard p-4 sm:p-6 shadow-[0_12px_28px_rgba(0,0,0,0.22)] sm:shadow-[0_16px_36px_rgba(0,0,0,0.24)]">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 sm:gap-0 mb-3 sm:mb-4">
             <div>
-                <h3 className="text-lg font-semibold text-slate-100">Gateway 状态</h3>
-                <p className="text-xs text-slate-500 mt-1">默认入口：{chatUrl}</p>
+                <h3 className="text-base sm:text-lg font-semibold text-slate-100">{t("manager.gatewayStatusTitle")}</h3>
+                <p className="text-[0.7rem] sm:text-xs text-slate-500 mt-0.5 sm:mt-1 break-all">{t("manager.defaultEntry", { url: chatUrl })}</p>
             </div>
             <StatusDot status={gatewayStatus} />
           </div>
 
-            <div className="grid grid-cols-2 gap-3 mb-5 text-sm">
-              <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-3.5">
-                <p className="text-xs text-slate-500 mb-1">监听端口</p>
-              <p className="text-slate-200 font-mono">{port}</p>
+            <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-4 sm:mb-5 text-xs sm:text-sm">
+              <div className="bg-slate-900/70 border border-slate-800 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5">
+                <p className="text-[0.7rem] sm:text-xs text-slate-500 mb-0.5 sm:mb-1">{t("manager.listenPort")}</p>
+              <p className="text-slate-200 font-mono text-xs sm:text-sm">{port}</p>
             </div>
-              <div className="bg-slate-900/70 border border-slate-800 rounded-xl p-3.5">
-                <p className="text-xs text-slate-500 mb-1">AI 服务</p>
-              <p className="text-slate-200">
+              <div className="bg-slate-900/70 border border-slate-800 rounded-lg sm:rounded-xl p-2.5 sm:p-3.5">
+                <p className="text-[0.7rem] sm:text-xs text-slate-500 mb-0.5 sm:mb-1">{t("manager.aiService")}</p>
+              <p className="text-slate-200 text-xs sm:text-sm truncate">
                 {manifest.api_key_configured
                   ? providerLabel[manifest.api_provider] || manifest.api_provider
-                  : <span className="text-yellow-500">未配置</span>}
+                  : <span className="text-yellow-500">{t("manager.notConfigured")}</span>}
               </p>
             </div>
           </div>
 
           {/* 主操作按钮 */}
-            <div className="flex gap-2.5">
+            <div className="flex gap-2">
             {gatewayStatus === "running" ? (
               <>
                 <button
@@ -423,100 +429,90 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
                   disabled={openingChat || chatLocked}
                     className={`${BTN_PRIMARY} flex-1`}
                 >
-                  {openingChat ? <Loader size={15} className="animate-spin" /> : <ExternalLink size={15} />}
-                  {openingChat ? "打开中..." : chatLocked ? "请稍候..." : "打开 Chat 界面"}
+                  {openingChat ? <Loader size={14} className="animate-spin sm:w-[15px] sm:h-[15px]" /> : <ExternalLink size={14} className="sm:w-[15px] sm:h-[15px]" />}
+                  {openingChat ? `${t("common.loading")}` : chatLocked ? "..." : t("manager.openChat")}
                 </button>
                 <button
                   onClick={() => doAction("restart")}
                   disabled={actionLoading !== null}
-                  title="重启 Gateway"
-                    className={`${BTN_SECONDARY} w-10 px-0`}
+                  title={t("manager.restart")}
+                    className={`${BTN_SECONDARY} w-10 sm:w-11 px-0`}
                 >
-                  <RefreshCw size={14} className={actionLoading === "restart" ? "animate-spin" : ""} />
+                  <RefreshCw size={20} className={`w-5 h-5 sm:w-[22px] sm:h-[22px] ${actionLoading === "restart" ? "animate-spin" : ""}`} />
                 </button>
                 <button
                   onClick={() => doAction("stop")}
                   disabled={actionLoading !== null}
-                  title="停止 Gateway"
-                    className={`${BTN_SECONDARY} w-10 px-0`}
+                  title={t("manager.stop")}
+                    className={`${BTN_SECONDARY} w-10 sm:w-11 px-0`}
                 >
-                  <Square size={14} />
+                  <Square size={20} className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
                 </button>
               </>
             ) : gatewayStatus === "starting" ? (
               <div className="flex gap-2 w-full">
-                <div className="flex-1 flex items-center justify-center gap-2 py-2.5 bg-slate-800 text-slate-400 text-sm rounded-xl border border-slate-700">
-                  <RefreshCw size={14} className="animate-spin" />
-                  启动中...
+                <div className="flex-1 flex items-center justify-center gap-1.5 sm:gap-2 py-2 sm:py-2.5 bg-slate-800 text-slate-400 text-xs sm:text-sm rounded-lg sm:rounded-xl border border-slate-700">
+                  <RefreshCw size={20} className="animate-spin w-5 h-5 sm:w-[22px] sm:h-[22px]" />
+                  {t("manager.status.starting")}...
                 </div>
                 <button
                   onClick={() => doAction("force_stop")}
                   disabled={actionLoading !== null}
                     className={BTN_DANGER}
                 >
-                  <Square size={14} />
-                  停止
+                  <Square size={20} className="w-5 h-5 sm:w-[22px] sm:h-[22px]" />
+                  {t("manager.stop")}
                 </button>
               </div>
             ) : (
-              <>
-                <button
-                  onClick={startAndOpenChat}
-                  disabled={actionLoading !== null || openingChat || chatLocked}
-                    className={`${BTN_PRIMARY} flex-1`}
-                >
-                  {actionLoading === "start_open" || openingChat ? <Loader size={14} className="animate-spin" /> : <ExternalLink size={14} />}
-                  {actionLoading === "start_open" || openingChat ? "启动中..." : "启动并打开 Chat"}
-                </button>
-                <button
-                  onClick={() => doAction("start")}
-                  disabled={actionLoading !== null}
-                  title="仅启动 Gateway，不打开 Chat"
-                    className={`${BTN_SECONDARY} w-10 px-0`}
-                >
-                  <Play size={14} />
-                </button>
-              </>
+              <button
+                onClick={startAndOpenChat}
+                disabled={actionLoading !== null || openingChat || chatLocked}
+                className={`${BTN_PRIMARY} w-full`}
+              >
+                {actionLoading === "start_open" || openingChat ? <Loader size={14} className="animate-spin sm:w-[15px] sm:h-[15px]" /> : <ExternalLink size={14} className="sm:w-[15px] sm:h-[15px]" />}
+                {actionLoading === "start_open" || openingChat ? `${t("manager.status.starting")}...` : t("manager.startAndOpen")}
+              </button>
             )}
           </div>
         </div>
 
         {/* 错误提示卡片 */}
         {lastError && (
-            <div className="bg-red-900/20 border border-red-800/50 rounded-2xl p-4">
-            <div className="flex items-start justify-between">
-              <div className="flex items-start gap-3">
-                <AlertTriangle size={18} className="text-red-400 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="text-sm text-red-400">{lastError}</p>
+            <div className="bg-red-900/20 border border-red-800/50 rounded-xl sm:rounded-2xl p-3 sm:p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2 sm:gap-3 flex-1 min-w-0">
+                <AlertTriangle size={16} className="text-red-400 flex-shrink-0 mt-0.5 sm:w-[18px] sm:h-[18px]" />
+                <div className="flex-1 min-w-0">
+                  <p className="text-xs sm:text-sm text-red-400 break-words">{lastError}</p>
                   {lastErrorHint && (
-                    <p className="text-xs text-red-300/70 mt-1">{lastErrorHint}</p>
+                    <p className="text-[0.7rem] sm:text-xs text-red-300/70 mt-0.5 sm:mt-1">{lastErrorHint}</p>
                   )}
                 </div>
               </div>
               <button
                 onClick={() => { setLastError(null); setLastErrorHint(null); }}
-                className="text-red-400/50 hover:text-red-400 transition-colors"
+                className="text-red-400/50 hover:text-red-400 transition-colors flex-shrink-0"
               >
-                <X size={16} />
+                <X size={14} className="sm:w-4 sm:h-4" />
               </button>
             </div>
-            <div className="flex gap-2 mt-3 pl-7">
+            <div className="flex gap-1.5 sm:gap-2 mt-2 sm:mt-3 pl-5 sm:pl-7">
               <button
                 onClick={runDiagnose}
                 disabled={actionLoading !== null || !cliCaps?.has_doctor}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-yellow-900/40 hover:bg-yellow-800/50 text-yellow-400 text-xs rounded-lg transition-colors disabled:opacity-50"
+                className="flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 bg-yellow-900/40 hover:bg-yellow-800/50 text-yellow-400 text-[0.7rem] sm:text-xs rounded-md sm:rounded-lg transition-colors disabled:opacity-50"
               >
-                <Stethoscope size={12} />
-                诊断问题
+                <Stethoscope size={11} className="sm:w-3 sm:h-3" />
+                {t("manager.runDiagnose")}
               </button>
               <button
                 onClick={runFix}
                 disabled={actionLoading !== null || !cliCaps?.has_doctor}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-yellow-900/40 hover:bg-yellow-800/50 text-yellow-400 text-xs rounded-lg transition-colors disabled:opacity-50"
+                className="flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 bg-yellow-900/40 hover:bg-yellow-800/50 text-yellow-400 text-[0.7rem] sm:text-xs rounded-md sm:rounded-lg transition-colors disabled:opacity-50"
               >
-                <Wrench size={12} />
-                一键修复
+                <Wrench size={11} className="sm:w-3 sm:h-3" />
+                {t("manager.runFix")}
               </button>
             </div>
           </div>
@@ -524,47 +520,47 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
 
         {/* 诊断结果面板 */}
           {showDoctorPanel && (
-            <div className="bg-slate-900/80 rounded-2xl border border-slate-800 p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h4 className="text-sm font-medium text-slate-200 flex items-center gap-2">
-                <Stethoscope size={16} className="text-yellow-400" />
-                诊断结果
+            <div className="bg-slate-900/80 rounded-xl sm:rounded-2xl border border-slate-800 p-3 sm:p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <div className="flex items-center justify-between mb-2 sm:mb-3">
+              <h4 className="text-xs sm:text-sm font-medium text-slate-200 flex items-center gap-1.5 sm:gap-2">
+                <Stethoscope size={14} className="text-yellow-400 sm:w-4 sm:h-4" />
+                {t("manager.diagnoseResult")}
               </h4>
               <button
                 onClick={() => { setShowDoctorPanel(false); setDoctorResult(null); }}
                 className="text-slate-500 hover:text-slate-300 transition-colors"
               >
-                <X size={16} />
+                <X size={14} className="sm:w-4 sm:h-4" />
               </button>
             </div>
             
             {actionLoading === "diagnose" ? (
-              <div className="flex items-center gap-2 text-slate-400 text-sm">
-                <Loader size={14} className="animate-spin" />
-                正在诊断...
+              <div className="flex items-center gap-1.5 sm:gap-2 text-slate-400 text-xs sm:text-sm">
+                <Loader size={13} className="animate-spin sm:w-[14px] sm:h-[14px]" />
+                {t("manager.diagnosing")}
               </div>
             ) : doctorResult ? (
-              <div className="space-y-2">
-                <div className={`text-sm ${doctorResult.passed ? "text-green-400" : "text-yellow-400"}`}>
+              <div className="space-y-1.5 sm:space-y-2">
+                <div className={`text-xs sm:text-sm ${doctorResult.passed ? "text-green-400" : "text-yellow-400"}`}>
                   {doctorResult.summary}
                 </div>
                 {doctorResult.issues.length > 0 && (
-                  <ul className="text-xs space-y-1 pl-2 border-l-2 border-slate-700">
+                  <ul className="text-[0.7rem] sm:text-xs space-y-0.5 sm:space-y-1 pl-1.5 sm:pl-2 border-l-2 border-slate-700">
                     {doctorResult.issues.map((issue, i) => (
-                      <li key={i} className={`pl-2 ${issue.severity === "error" ? "text-red-400" : "text-yellow-500"}`}>
+                      <li key={i} className={`pl-1.5 sm:pl-2 break-words ${issue.severity === "error" ? "text-red-400" : "text-yellow-500"}`}>
                         {issue.message}
                       </li>
                     ))}
                   </ul>
                 )}
-                <div className="flex gap-2 mt-3">
+                <div className="flex gap-1.5 sm:gap-2 mt-2 sm:mt-3">
                   <button
                     onClick={runFix}
                     disabled={actionLoading !== null || doctorResult.passed}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-yellow-900/40 hover:bg-yellow-800/50 text-yellow-400 text-xs rounded-lg transition-colors disabled:opacity-50"
+                    className="flex items-center gap-1 sm:gap-1.5 px-2.5 sm:px-3 py-1 sm:py-1.5 bg-yellow-900/40 hover:bg-yellow-800/50 text-yellow-400 text-[0.7rem] sm:text-xs rounded-md sm:rounded-lg transition-colors disabled:opacity-50"
                   >
-                    {actionLoading === "fix" ? <Loader size={12} className="animate-spin" /> : <Wrench size={12} />}
-                    {actionLoading === "fix" ? "修复中..." : "运行修复"}
+                    {actionLoading === "fix" ? <Loader size={11} className="animate-spin sm:w-3 sm:h-3" /> : <Wrench size={11} className="sm:w-3 sm:h-3" />}
+                    {actionLoading === "fix" ? `${t("manager.runFix")}...` : t("manager.runFixNow")}
                   </button>
                   <button
                     onClick={runDiagnose}
@@ -572,29 +568,34 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs rounded-lg transition-colors disabled:opacity-50"
                   >
                     <RefreshCw size={12} />
-                    重新诊断
+                    {t("manager.rediagnose")}
                   </button>
                 </div>
               </div>
             ) : (
-              <p className="text-xs text-slate-500">点击"诊断问题"开始检测</p>
+              <p className="text-xs text-slate-500">{t("manager.clickDiagnose")}</p>
             )}
           </div>
         )}
 
         {/* 快捷操作列表 */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            <ActionGroup title="常用操作" hint="最常用的启动与配置入口" highlight={configMissing}>
+            <ActionGroup
+              title={t("manager.group.common")}
+              hint={t("manager.group.commonHint")}
+              highlight={configMissing}
+              recommendedLabel={t("manager.recommended")}
+            >
               <ActionRow
                 icon={<FileEdit size={16} className="text-brand-400" />}
-                label="综合配置（API / skills / hooks）"
-                desc={configMissing ? "建议先完成：API / skills / 飞书配置" : "随时运行 openclaw onboard 调整 API Key、skills 和启动方式"}
+                label={t("manager.action.configFull")}
+                desc={configMissing ? t("manager.action.configFullDescMissing") : t("manager.action.configFullDescReady")}
                 onClick={() => setShowConfigPanel(true)}
               />
               <ActionRow
                 icon={<FileEdit size={16} />}
-                label="修改 API Key"
-                desc={manifest.api_key_configured ? "编辑 ~/.openclaw/openclaw.json 配置文件" : "打开配置文件设置 API Key"}
+                label={t("manager.action.configApi")}
+                desc={manifest.api_key_configured ? t("manager.action.configApiDescReady") : t("manager.action.configApiDescMissing")}
                 onClick={async () => {
                   try {
                     await invoke("open_config_file");
@@ -605,7 +606,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
               />
               <ActionRow
                 icon={<FolderOpen size={16} />}
-                label="安装目录"
+                label={t("manager.action.installDir")}
                 desc={manifest.install_dir}
                 onClick={async () => {
                   try {
@@ -617,48 +618,48 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
               />
             </ActionGroup>
 
-            <ActionGroup title="维护诊断" hint="排障、日志与健康检查">
+            <ActionGroup title={t("manager.group.maintenance")} hint={t("manager.group.maintenanceHint")}>
               <ActionRow
                 icon={<Stethoscope size={16} className="text-yellow-400" />}
-                label="诊断与修复"
-                desc="运行 openclaw doctor 检测并修复问题"
+                label={t("manager.action.diagFix")}
+                desc={t("manager.action.diagFixDesc")}
                 loading={actionLoading === "diagnose"}
                 onClick={runDiagnose}
               />
               <ActionRow
                 icon={<FolderOpen size={16} className="text-blue-400" />}
-                label="查看 installer 日志"
+                label={t("manager.action.installerLogs")}
                 desc="%USERPROFILE%\\.openclaw\\installer-logs"
                 onClick={openLogDirectory}
               />
               <ActionRow
                 icon={<FolderOpen size={16} className="text-blue-400" />}
-                label="查看运行日志"
+                label={t("manager.action.runtimeLogs")}
                 desc="<install_dir>\\logs"
                 onClick={openRuntimeLogDirectory}
               />
             </ActionGroup>
 
-            <ActionGroup title="危险操作" hint="执行前请再次确认">
+            <ActionGroup title={t("manager.group.danger")} hint={t("manager.group.dangerHint")}>
               <ActionRow
                 danger
                 icon={<Trash2 size={16} className="text-red-400" />}
-                label={<span className="text-red-400">卸载 OpenClaw</span>}
-                desc="停止 Gateway 并删除所有已安装的文件"
+                label={<span className="text-red-400">{t("manager.action.uninstall")}</span>}
+                desc={t("manager.action.uninstallDesc")}
                 loading={actionLoading === "uninstall"}
                 onClick={async () => {
-                  if (!confirm("确定要卸载 OpenClaw 吗？\n\n将停止 Gateway 并删除安装目录。\n（~/.openclaw/ 配置文件会保留）")) return;
+                  if (!confirm(t("manager.uninstallConfirm"))) return;
                   setActionLoading("uninstall");
                   try {
                     await invoke("kill_gateway_process", { installDir: manifest.install_dir, port });
                     await invoke("uninstall", { installDir: manifest.install_dir });
-                    alert("卸载完成！程序将关闭。");
+                    alert(t("manager.uninstallDone"));
                     if (isTauri) {
                       const { getCurrentWindow } = await import("@tauri-apps/api/window");
                       await getCurrentWindow().close();
                     }
                   } catch (e) {
-                    alert(`卸载失败: ${e}`);
+                    alert(t("manager.uninstallFailed", { error: String(e) }));
                   } finally {
                     setActionLoading(null);
                   }
@@ -669,7 +670,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
 
         {/* 版本信息 */}
           <p className="text-center text-xs text-slate-700">
-          OpenClaw Manager v{manifest.version} · 安装目录: {manifest.install_dir}
+              OpenClaw Manager v{manifest.version} · {t("success.installDir")}: {manifest.install_dir}
         </p>
         </div>
       </div>
@@ -678,7 +679,7 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="w-full max-w-5xl h-[88vh] bg-slate-950 border border-slate-800 rounded-2xl p-5 flex flex-col overflow-hidden shadow-2xl">
             <div className="flex items-center justify-between mb-3">
-              <h3 className="text-base font-semibold text-slate-100">综合配置</h3>
+              <h3 className="text-base font-semibold text-slate-100">{t("manager.configModalTitle")}</h3>
               <button
                 onClick={() => setShowConfigPanel(false)}
                 className="w-8 h-8 rounded-lg bg-slate-900 border border-slate-700 text-slate-500 hover:text-slate-300 hover:border-slate-600 transition-colors flex items-center justify-center"
@@ -686,21 +687,23 @@ export default function Manager({ manifest, cliCaps, gatewayStatus, onStatusChan
                 <X size={16} />
               </button>
             </div>
-            <UnifiedConfigPanel
-              cliCaps={cliCaps}
-              mode="manager"
-              onCancel={() => setShowConfigPanel(false)}
-              onDone={async (summary) => {
-                await refreshManifestState();
-                setShowConfigPanel(false);
-                if (summary?.hint) {
-                  setLastErrorHint(summary.hint);
-                }
-                if (summary?.message) {
-                  setLastError(null);
-                }
-              }}
-            />
+            <div className="flex-1 min-h-0">
+              <UnifiedConfigPanel
+                cliCaps={cliCaps}
+                mode="manager"
+                onCancel={() => setShowConfigPanel(false)}
+                onDone={async (summary) => {
+                  await refreshManifestState();
+                  setShowConfigPanel(false);
+                  if (summary?.hint) {
+                    setLastErrorHint(summary.hint);
+                  }
+                  if (summary?.message) {
+                    setLastError(null);
+                  }
+                }}
+              />
+            </div>
           </div>
         </div>
       )}
@@ -747,11 +750,13 @@ function ActionGroup({
   title,
   hint,
   highlight = false,
+  recommendedLabel = "Recommended",
   children,
 }: {
   title: string;
   hint: string;
   highlight?: boolean;
+  recommendedLabel?: string;
   children: React.ReactNode;
 }) {
   return (
@@ -768,7 +773,7 @@ function ActionGroup({
           {title}
           {highlight && (
             <span className="text-[10px] px-2 py-0.5 rounded-full border border-brand-400/50 text-brand-300 bg-brand-500/10">
-              推荐
+              {recommendedLabel}
             </span>
           )}
         </p>

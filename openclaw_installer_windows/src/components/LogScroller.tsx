@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { LogEntry } from "../types";
+import { useI18n } from "../i18n/useI18n";
 
 interface Props {
   logs: LogEntry[];
@@ -23,6 +24,7 @@ const levelPrefix: Record<LogEntry["level"], string> = {
 };
 
 export default function LogScroller({ logs, maxHeight = "h-48" }: Props) {
+  const { t } = useI18n();
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -31,13 +33,16 @@ export default function LogScroller({ logs, maxHeight = "h-48" }: Props) {
 
   return (
     <div
-      className={`${maxHeight} overflow-y-auto bg-gray-900 rounded-lg border border-gray-700 p-3 font-mono text-xs`}
+      className={`${maxHeight} overflow-y-auto p-0.5 font-mono text-xs sm:text-sm`}
     >
       {logs.length === 0 ? (
-        <span className="text-gray-600">等待输出...</span>
+        <span className="text-gray-600">{t("common.waitingOutput")}</span>
       ) : (
         logs.map((log) => (
-          <div key={log.id} className={`leading-5 ${levelColor[log.level]}`}>
+          <div
+            key={log.id}
+            className={`leading-5 break-words animate-log-line-in ${levelColor[log.level]}`}
+          >
             <span className="text-gray-600">{levelPrefix[log.level]}</span>
             {log.message}
           </div>

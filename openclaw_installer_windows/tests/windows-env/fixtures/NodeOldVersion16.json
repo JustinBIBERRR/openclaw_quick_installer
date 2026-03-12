@@ -1,0 +1,19 @@
+{
+  "id": "NodeOldVersion16",
+  "description": "Node 已装但版本过低（v16）",
+  "simulate": {
+    "nodeMode": "old16",
+    "wingetAvailable": true,
+    "hideGit": true,
+    "hideBash": true,
+    "hideDocker": true,
+    "occupyPort18789": false,
+    "brokenOpenclawConfig": false,
+    "installDirMode": "default",
+    "networkRestricted": false
+  },
+  "expected": {
+    "installShouldPass": true,
+    "riskLevel": "P1"
+  }
+}

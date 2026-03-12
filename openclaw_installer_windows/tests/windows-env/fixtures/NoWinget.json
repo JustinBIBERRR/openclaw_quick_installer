@@ -1,0 +1,19 @@
+{
+  "id": "NoWinget",
+  "description": "无 winget，Node 缺失，验证当前阻断",
+  "simulate": {
+    "nodeMode": "missing",
+    "wingetAvailable": false,
+    "hideGit": true,
+    "hideBash": true,
+    "hideDocker": true,
+    "occupyPort18789": false,
+    "brokenOpenclawConfig": false,
+    "installDirMode": "default",
+    "networkRestricted": false
+  },
+  "expected": {
+    "installShouldPass": false,
+    "riskLevel": "P0"
+  }
+}

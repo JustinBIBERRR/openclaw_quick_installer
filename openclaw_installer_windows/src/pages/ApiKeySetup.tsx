@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Eye, EyeOff, Loader, CheckCircle, AlertCircle } from "lucide-react";
 import type { ApiKeyDraft, ApiProvider, ApiProviderConfig, SavedApiConfig } from "../types";
+import { useI18n } from "../i18n/useI18n";
 
 interface Props {
   onDone: (draft: ApiKeyDraft) => void;
@@ -34,11 +35,11 @@ const PROVIDERS: ApiProviderConfig[] = [
   },
   {
     id: "custom",
-    name: "自定义 API（OpenAI 兼容）",
+    name: "",
     keyPrefix: "",
     defaultBaseUrl: "",
     models: [],
-    placeholder: "输入您的 API Key",
+    placeholder: "",
   },
 ];
 
@@ -46,6 +47,7 @@ type ValidateState = "idle" | "validating" | "ok" | "warn" | "error";
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
 export default function ApiKeySetup({ onDone }: Props) {
+  const { t } = useI18n();
   const apiKeyInputRef = useRef<HTMLInputElement | null>(null);
   const [provider, setProvider] = useState<ApiProvider>("anthropic");
   const [model, setModel] = useState(PROVIDERS[0].models[0] || "");
@@ -90,11 +92,11 @@ export default function ApiKeySetup({ onDone }: Props) {
         setModel(saved.model || "");
         setDetectedConfig(saved);
         setValidateState("ok");
-        setValidateMsg("检测到已配置 API Key，可直接继续或按需修改");
-        setDetectedMsg(`已检测到 ${p === "custom" ? "自定义" : p} 的 API Key 配置`);
+        setValidateMsg(t("apikey.detectedFilled"));
+        setDetectedMsg(t("apikey.detectedProvider", { provider: p === "custom" ? t("apikey.providerCustom") : p }));
       })
       .catch(() => {});
-  }, []);
+  }, [t]);
 
   function resetToBlank() {
     setProvider("anthropic");
@@ -113,10 +115,10 @@ export default function ApiKeySetup({ onDone }: Props) {
   async function validate() {
     if (!keyValid || !baseUrlValid) return;
     setValidateState("validating");
-    setValidateMsg("正在验证连通性...");
+    setValidateMsg(t("apikey.validating"));
     await new Promise((r) => setTimeout(r, 600));
     setValidateState("ok");
-    setValidateMsg("格式检查通过，可继续下一步");
+    setValidateMsg(t("apikey.formatOk"));
   }
 
   async function save(skip = false) {
@@ -140,18 +142,17 @@ export default function ApiKeySetup({ onDone }: Props) {
   return (
     <div className="h-full flex flex-col px-6 py-4 gap-4 overflow-y-auto">
       <div>
-        <h2 className="text-lg font-semibold text-gray-100">配置 AI 模型</h2>
+        <h2 className="text-lg font-semibold text-gray-100">{t("apikey.title")}</h2>
         <p className="text-sm text-gray-400 mt-0.5">
-          选择 AI 服务商并输入 API Key，或跳过稍后在 OpenClaw 界面中配置
+          {t("apikey.subtitle")}
         </p>
         {detectedMsg && (
           <p className="text-xs text-brand-400 mt-2">
-            {detectedMsg}，已自动填充 API Key（密码形式显示）。
+            {detectedMsg}{t("apikey.detectedSuffix")}
           </p>
         )}
       </div>
 
-      {/* 服务商选择 */}
       <div className="grid grid-cols-2 gap-2">
         {PROVIDERS.map((p) => (
           <button
@@ -168,38 +169,37 @@ export default function ApiKeySetup({ onDone }: Props) {
                 : "border-gray-700 bg-gray-900 text-gray-400 hover:border-gray-600"
               }`}
           >
-            {p.name}
+            {p.id === "custom" ? t("apikey.providerCustomName") : p.name}
           </button>
         ))}
       </div>
 
-      {/* API Key 输入 */}
       <div className="bg-gray-900 rounded-lg border border-gray-700 p-4 flex flex-col gap-3">
         {detectedConfig && (
           <div className="bg-gray-800/60 border border-gray-700 rounded-md p-3">
-            <p className="text-xs text-gray-400">已检测配置</p>
+            <p className="text-xs text-gray-400">{t("apikey.detectedConfig")}</p>
             <div className="mt-1.5 text-xs text-gray-300 space-y-1">
               <p>Provider: {detectedConfig.provider || "-"}</p>
-              <p>Base URL: {detectedConfig.base_url || "(默认)"}</p>
-              <p>Model: {detectedConfig.model || "(未记录)"}</p>
+              <p>Base URL: {detectedConfig.base_url || t("config.default")}</p>
+              <p>Model: {detectedConfig.model || t("config.notRecorded")}</p>
             </div>
             <button
               onClick={resetToBlank}
               className="mt-2 text-xs text-gray-400 hover:text-gray-200 underline underline-offset-2"
             >
-              恢复为默认空白
+              {t("apikey.resetToBlank")}
             </button>
           </div>
         )}
 
         <div>
-          <label className="block text-xs text-gray-400 mb-1">模型</label>
+          <label className="block text-xs text-gray-400 mb-1">{t("apikey.model")}</label>
           {provider === "custom" ? (
             <input
               type="text"
               value={model}
               onChange={(e) => setModel(e.target.value)}
-              placeholder="例如：deepseek/deepseek-chat 或 openai/gpt-4o-mini"
+              placeholder={t("apikey.modelPlaceholder")}
               className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 text-sm text-gray-200 outline-none focus:border-brand-400 font-mono"
               style={{ userSelect: "text" }}
             />
@@ -215,13 +215,13 @@ export default function ApiKeySetup({ onDone }: Props) {
             </select>
           )}
           <p className="text-[11px] text-gray-500 mt-1">
-            系统会按所选厂商自动补全并写入正确模型格式。
+            {t("apikey.autoWriteHint")}
           </p>
         </div>
 
         {provider === "custom" && (
           <div>
-            <label className="block text-xs text-gray-400 mb-1">Base URL（必填）</label>
+            <label className="block text-xs text-gray-400 mb-1">{t("apikey.baseUrlRequired")}</label>
             <input
               type="text"
               value={baseUrl}
@@ -237,7 +237,7 @@ export default function ApiKeySetup({ onDone }: Props) {
           <label className="block text-xs text-gray-400 mb-1">
             API Key
             {pConfig.keyPrefix && (
-              <span className="text-gray-600 ml-1">（应以 {pConfig.keyPrefix} 开头）</span>
+              <span className="text-gray-600 ml-1">{t("apikey.keyPrefix", { prefix: pConfig.keyPrefix })}</span>
             )}
           </label>
           <div className="relative">
@@ -246,7 +246,7 @@ export default function ApiKeySetup({ onDone }: Props) {
               type={showKey ? "text" : "password"}
               value={apiKey}
               onChange={(e) => { setApiKey(e.target.value); setValidateState("idle"); }}
-              placeholder={pConfig.placeholder}
+              placeholder={pConfig.id === "custom" ? t("apikey.placeholderApiKey") : pConfig.placeholder}
               className="w-full bg-gray-800 border border-gray-600 rounded px-3 py-2 pr-10 text-sm text-gray-200 outline-none focus:border-brand-400 font-mono"
               style={{ userSelect: "text" }}
             />
@@ -259,17 +259,16 @@ export default function ApiKeySetup({ onDone }: Props) {
           </div>
           {apiKey && !keyValid && pConfig.keyPrefix && (
             <p className="text-xs text-yellow-500 mt-1">
-              Key 格式似乎不正确，{pConfig.name} 的 Key 应以 {pConfig.keyPrefix} 开头
+              {t("apikey.keyFormatInvalid", { name: pConfig.name || pConfig.id, prefix: pConfig.keyPrefix })}
             </p>
           )}
           {provider === "custom" && baseUrl && !baseUrlValid && (
             <p className="text-xs text-yellow-500 mt-1">
-              Base URL 格式无效，请输入 http(s) 开头的完整地址
+              {t("apikey.baseUrlInvalid")}
             </p>
           )}
         </div>
 
-        {/* 验证状态 */}
         {validateState !== "idle" && (
           <div className={`flex items-center gap-2 text-sm
             ${validateState === "ok"         ? "text-brand-400" : ""}
@@ -291,20 +290,19 @@ export default function ApiKeySetup({ onDone }: Props) {
           className="self-start px-3 py-1.5 text-xs bg-gray-700 hover:bg-gray-600 disabled:opacity-40
             text-gray-300 rounded border border-gray-600 transition-colors"
         >
-          验证连通性
+          {t("apikey.validateConnectivity")}
         </button>
       </div>
 
       <div className="flex-1" />
 
-      {/* 底部操作 */}
       <div className="flex items-center justify-between flex-shrink-0">
         <button
           onClick={() => save(true)}
           disabled={saving}
           className="text-sm text-gray-500 hover:text-gray-300 transition-colors"
         >
-          跳过，稍后配置
+          {t("apikey.skipConfig")}
         </button>
         <button
           onClick={() => save(false)}
@@ -314,7 +312,7 @@ export default function ApiKeySetup({ onDone }: Props) {
             text-gray-950 font-semibold text-sm rounded-lg transition-colors"
         >
           {saving && <Loader size={14} className="animate-spin" />}
-          保存并继续 →
+          {t("apikey.saveAndContinue")}
         </button>
       </div>
     </div>

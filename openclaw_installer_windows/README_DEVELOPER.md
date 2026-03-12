@@ -36,6 +36,140 @@ npm run tauri dev
 npm run tauri build
 ```
 
+## 测试命令
+
+```bash
+# 前端单元测试（Vitest）
+npm run test:ui
+
+# Rust 单元测试
+npm run test:rust
+
+# PowerShell/Pester 安装脚本测试
+npm run test:ps
+
+# 一键执行全部快速回归
+npm test
+```
+
+## 极端环境模拟（手工测试辅助）
+
+```powershell
+# 准备测试画像
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\scripts\Prepare-TestProfile.ps1 -Profile CleanNoNode
+
+# 执行便携版并采集证据
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\scripts\Run-PortableInstallerTest.ps1 -ExePath .\openclaw-installer.exe -Profile CleanNoNode
+
+# 断言最新证据
+$ev = powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\assert\Collect-LatestEvidence.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\assert\Assert-InstallEvidence.ps1 -EvidenceFile $ev
+
+# 清理
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\scripts\Reset-TestProfile.ps1 -Deep
+```
+
+## 测试边界
+
+当前这套“Windows 极端环境测试”主要覆盖便携版 `openclaw-installer.exe` 的安装、配置、启动与恢复链路，重点验证：
+
+- 全新干净机：无 Node、无 OpenClaw、无 `~/.openclaw`
+- 缺少 `winget`、Node 版本过低、npm 全局安装失败
+- 中文用户名、中文安装目录、空格路径
+- 无 Git / Bash / Docker / Hyper-V 的普通 Windows 环境
+- 端口 `18789` 被占用、配置损坏、恢复链路
+
+当前明确 **不属于主链路硬依赖** 的环境项：
+
+- Docker
+- Git
+- Bash
+- Hyper-V
+
+它们的测试目标是“证明不需要这些东西也能安装”，而不是依赖它们完成安装。
+
+当前已知阻断/限制也需要被明确记录：
+
+- `NoWinget`：当前安装脚本没有 MSI 自动降级链路，缺少 `winget` 会直接失败
+- 中文路径 / 空格路径：当前实现会主动判定为不合法，不是“应当通过”的场景
+- npm 全局安装权限异常：会直接阻断安装
+- PATH 刷新与 `openclaw.cmd` 发现：安装后立即验证阶段仍有误判风险
+
+更完整的基线风险说明请看：
+
+- [docs/testing/windows-extreme-risk-baseline.md](./docs/testing/windows-extreme-risk-baseline.md)
+- [docs/testing/windows-vm-matrix.md](./docs/testing/windows-vm-matrix.md)
+- [tests/windows-env/README.md](./tests/windows-env/README.md)
+
+## 手动测试命令
+
+下面命令是给测试人员直接复制执行的最小手册。
+
+### 1. 准备某个边界环境
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\scripts\Prepare-TestProfile.ps1 -Profile CleanNoNode
+```
+
+常用 profile：
+
+- `CleanNoNode`
+- `NoWinget`
+- `NodeOldVersion16`
+- `NpmGlobalInstallDenied`
+- `PathRefreshFailed`
+- `ChineseUserProfile`
+- `ChineseInstallDir`
+- `PathWithSpaces`
+- `PortOccupied18789`
+- `BrokenOpenclawConfig`
+- `NetworkRestricted`
+- `WinHomeNoHyperV`
+
+### 2. 启动手工测试辅助说明
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\scripts\Start-ManualChecklist.ps1 -Profile NoWinget -ExePath .\openclaw-installer.exe
+```
+
+### 3. 执行便携版并采集证据
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\scripts\Run-PortableInstallerTest.ps1 -ExePath .\openclaw-installer.exe -Profile CleanNoNode
+```
+
+### 4. 断言最新证据
+
+```powershell
+$ev = powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\assert\Collect-LatestEvidence.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\assert\Assert-InstallEvidence.ps1 -EvidenceFile $ev
+```
+
+### 5. 清理测试环境
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\scripts\Reset-TestProfile.ps1 -Deep
+```
+
+### 6. 推荐首轮必跑顺序
+
+```powershell
+# 1) 干净机新装
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\scripts\Prepare-TestProfile.ps1 -Profile CleanNoNode
+
+# 2) 无 winget 阻断
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\scripts\Prepare-TestProfile.ps1 -Profile NoWinget
+
+# 3) 中文路径限制
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\scripts\Prepare-TestProfile.ps1 -Profile ChineseInstallDir
+
+# 4) 空格路径限制
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\scripts\Prepare-TestProfile.ps1 -Profile PathWithSpaces
+
+# 5) 配置损坏恢复
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\windows-env\scripts\Prepare-TestProfile.ps1 -Profile BrokenOpenclawConfig
+```
+
 ## 应用流程架构
 
 ### 主要视图模式
