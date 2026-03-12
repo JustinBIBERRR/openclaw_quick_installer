@@ -1,9 +1,6 @@
 # 🦞 OpenClaw Windows Quick Installer
 
 > **让 AI Agent 像安装游戏一样简单 | 专为 Windows 用户打造的 OpenClaw 一键部署与管理工具**
-> 
-![welcome](openclaw_installer_windows/README_assets/welcomePage.png)
-
 [![GitHub stars](https://img.shields.io/github/stars/JustinBIBERRR/openclaw_quick_installer?style=social)](https://github.com/JustinBIBERRR/openclaw_quick_installer)
 [![Platform](https://img.shields.io/badge/Platform-Windows-blue)](https://github.com/JustinBIBERRR/openclaw_quick_installer)
 [![License](https://img.shields.io/badge/License-MIT-green)](https://opensource.org/licenses/MIT)
@@ -39,6 +36,7 @@
 - **⚙️ 引导式配置**：支持 Anthropic, OpenAI, DeepSeek 等主流模型及飞书机器人一键配置。
 - **🔍 智能诊断**：内置端口冲突检测与日志查看工具，快速排查运行异常。
 - **🧹 优雅卸载**：提供“一键卸载”功能，干净清理环境，支持二次确认防止误删。
+![welcome](openclaw_installer_windows/README_assets/welcomePage.png)
 
 ---
 
