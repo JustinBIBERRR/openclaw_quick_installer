@@ -105,12 +105,16 @@ jobs:
           $size = (Get-Item $out).Length / 1MB
           Write-Host "Downloaded: $([math]::Round($size,1)) MB"
 
+      # ── 6b. 先单独构建前端，便于 CI 中看到 tsc/vite 的报错 ─────
+      - name: Build frontend
+        run: npm run build
+
       # ── 7. 构建 Tauri（生成 NSIS 安装包 + 便携 exe）─────────────
       - name: Build Tauri app
         run: npm run tauri build
         env:
-          # 关闭 Rust 增量编译，CI 环境下节省空间
           CARGO_INCREMENTAL: "0"
+          RUST_BACKTRACE: "1"
 
       # ── 8. 列出产物路径，便于调试 ─────────────────────────────────
       - name: List build artifacts
