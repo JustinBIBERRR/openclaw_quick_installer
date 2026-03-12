@@ -46,7 +46,7 @@
 
 ### 1. 欢迎与预检
 首先进入欢迎页，系统会自动进行管理员权限、内存（推荐 ≥8GB）及网络联通性检查，确保安装万无一失。
-![环境预检](openclaw_installer_windows/README_assets/systemCheck.png)
+![环境预检](openclaw_installer_windows/README_assets/SystemCheck.png)
 
 ### 2. 一键自动化部署
 自动下载并部署 OpenClaw 运行环境。安装过程会唤起 PowerShell 窗口预览进度，让每一步都清晰可见。
