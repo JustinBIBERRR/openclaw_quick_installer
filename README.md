@@ -1,10 +1,10 @@
 # 🦞 OpenClaw Windows Quick Installer
 
 > **让 AI Agent 像安装游戏一样简单 | 专为 Windows 用户打造的 OpenClaw 一键部署与管理工具**
+
 [![GitHub stars](https://img.shields.io/github/stars/JustinBIBERRR/openclaw_quick_installer?style=social)](https://github.com/JustinBIBERRR/openclaw_quick_installer)
 [![Platform](https://img.shields.io/badge/Platform-Windows-blue)](https://github.com/JustinBIBERRR/openclaw_quick_installer)
 [![License](https://img.shields.io/badge/License-MIT-green)](https://opensource.org/licenses/MIT)
-
 ---
 
 ## 💡 为什么选择本工具？
