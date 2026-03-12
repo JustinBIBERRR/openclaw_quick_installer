@@ -45,9 +45,6 @@ npm run test:ui
 # Rust 单元测试
 npm run test:rust
 
-# PowerShell/Pester 安装脚本测试
-npm run test:ps
-
 # 一键执行全部快速回归
 npm test
 ```

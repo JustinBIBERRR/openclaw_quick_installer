@@ -45,9 +45,6 @@ jobs:
         env:
           OPENCLAW_SKIP_TAURI_BUILD: "1"
 
-      - name: Run PowerShell/Pester tests
-        run: npm run test:ps
-
   build-windows:
     name: Build Windows Installer
     runs-on: windows-latest

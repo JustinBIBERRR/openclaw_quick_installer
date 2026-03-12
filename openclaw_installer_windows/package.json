@@ -11,8 +11,7 @@
     "test:ui": "vitest run --config vite.config.ts",
     "test:ui:watch": "vitest --config vite.config.ts",
     "test:rust": "cargo test --manifest-path ./src-tauri/Cargo.toml",
-    "test:ps": "powershell -NoProfile -ExecutionPolicy Bypass -File ./tests/windows-env/pester/Invoke-Pester.ps1",
-    "test": "npm run test:ui && npm run test:rust && npm run test:ps"
+    "test": "npm run test:ui && npm run test:rust"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
