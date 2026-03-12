@@ -1,16 +1,17 @@
 $ErrorActionPreference = "Stop"
 
-$assertScript = Join-Path $PSScriptRoot "..\assert\Assert-InstallEvidence.ps1"
-
 function Invoke-AssertScript {
-    param([string]$EvidenceFile)
+    param([string]$EvidenceFile, [string]$AssertScript)
     $proc = Start-Process -FilePath "powershell" `
-        -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $assertScript, "-EvidenceFile", $EvidenceFile `
+        -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $AssertScript, "-EvidenceFile", $EvidenceFile `
         -PassThru -Wait -NoNewWindow
     $proc.ExitCode
 }
 
 Describe "evidence assertions" {
+    BeforeAll {
+        $script:assertScript = (Resolve-Path (Join-Path $PSScriptRoot "..\assert\Assert-InstallEvidence.ps1")).Path
+    }
     It "passes when success profile has success signals and required files" {
         $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("evidence-pass-" + [guid]::NewGuid().ToString("N"))
         New-Item -ItemType Directory -Force -Path $tmp | Out-Null
@@ -38,7 +39,7 @@ Describe "evidence assertions" {
         $evFile = Join-Path $tmp "evidence.json"
         $evidence | ConvertTo-Json -Depth 5 | Out-File -FilePath $evFile -Encoding utf8
 
-        (Invoke-AssertScript -EvidenceFile $evFile) | Should -Be 0
+        (Invoke-AssertScript -EvidenceFile $evFile -AssertScript $script:assertScript) | Should -Be 0
     }
 
     It "passes when failure profile has explicit failure signals" {
@@ -64,6 +65,6 @@ Describe "evidence assertions" {
         $evFile = Join-Path $tmp "evidence.json"
         $evidence | ConvertTo-Json -Depth 5 | Out-File -FilePath $evFile -Encoding utf8
 
-        (Invoke-AssertScript -EvidenceFile $evFile) | Should -Be 0
+        (Invoke-AssertScript -EvidenceFile $evFile -AssertScript $script:assertScript) | Should -Be 0
     }
 }
